@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["src/feml", "src/femlc"]
+
+[workspace.dependencies]
+feml = {path = "src/feml"}
