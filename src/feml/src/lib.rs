@@ -1,1 +1,1 @@
-pub static WHO: &str = "world";
+pub mod token;
