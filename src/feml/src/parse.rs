@@ -118,6 +118,9 @@ enum S<'i> {
     Term,
     TermLP(Loc),
     TermRP(ExpHnd),
+    InfixMaybeParamId(Prec, Loc),
+    InfixMaybeParamCl(Prec, Name<'i>),
+    InfixArrowAr(Prec, Param<'i>),
 }
 
 // parser reduction for Name type
@@ -134,6 +137,7 @@ enum RSig {
 // parser reduction for Param type
 enum RParam<'i> {
     Sig1(Name<'i>, Vec<Param<'i>>),
+    InfixArrowAr(Prec),
 }
 
 // parser reduction for Exp type
@@ -146,6 +150,7 @@ enum RExp<'i> {
     AppArg,
     AppApply(ExpHnd),
     TermRP,
+    InfixArrowApply(Prec, Param<'i>),
 }
 
 impl<'i> Parser<'i> {
@@ -301,12 +306,24 @@ impl<'i> Parser<'i> {
 
                 // <infix> ::=
                 //   <app> {<oper> <app>}
-                S::Infix(prec) => {
-                    self.reduce_exp.push(RExp::InfixOp(prec));
-                    self.state = S::App;
-                    continue;
-                }
+                //   <infix> "->" <infix>
+                //   <param> "->" <infix>
+                S::Infix(prec) => match t {
+                    // if an expr starts with "(" at the highest precedence level then we
+                    // have to be prepared for expr of the form "(x : t) -> e"
+                    Token::LP if prec.binds_rhs(Prec::arrow()) => {
+                        self.state = S::InfixMaybeParamId(prec, loc);
+                        break;
+                    }
+                    _ => {
+                        self.reduce_exp.push(RExp::InfixOp(prec));
+                        self.state = S::App;
+                        continue;
+                    }
+                },
                 S::InfixOp(prec, lhs) => {
+                    // Some if t is an operator that we should parse, otherwise None and
+                    // we should stop parsing operators.
                     let op_and_prec = match t {
                         Token::Ar => {
                             let op_prec = Prec::arrow();
@@ -389,6 +406,54 @@ impl<'i> Parser<'i> {
                     }
                     _ => return Err(expected(loc, "')' after expression", t)),
                 },
+
+                // <infix> ::= ... | <param> "->" <infix>
+                S::InfixMaybeParamId(prec, loc_lp) => match t {
+                    Token::Ident(ident) => {
+                        // currently seen "(id" so we have to be prepared for expr of the
+                        // form "(id : ty) -> ..."
+                        let name = Name::ident(loc, self.intern.intern(ident));
+                        self.state = S::InfixMaybeParamCl(prec, name);
+                        break;
+                    }
+                    _ => {
+                        // encountered something else so revert parse state to what it
+                        // would have been if we abandoned looking for arrow types
+                        self.reduce_exp.push(RExp::InfixOp(prec));
+                        self.reduce_exp.push(RExp::AppArg);
+                        self.state = S::TermLP(loc_lp);
+                        continue;
+                    }
+                },
+                S::InfixMaybeParamCl(prec, name) => match t {
+                    Token::Cl => {
+                        // currently seen "(id :" so now we commit to this being arrow
+                        // syntax
+                        self.reduce_param.push(RParam::InfixArrowAr(prec));
+                        self.reduce_exp.push(RExp::Param3(name));
+                        self.state = S::Exp;
+                        break;
+                    }
+                    _ => {
+                        // see previous comment but this time its much worse
+                        self.reduce_exp.push(RExp::InfixOp(prec));
+                        self.reduce_exp.push(RExp::AppArg);
+                        self.reduce_exp.push(RExp::TermRP);
+                        self.reduce_exp.push(RExp::InfixOp(Prec::arrow()));
+                        self.reduce_exp.push(RExp::AppArg);
+                        self.reduce_name.push(RName::ExpVar);
+                        self.reduce_name(name);
+                        continue;
+                    }
+                },
+                S::InfixArrowAr(prec, param) => match t {
+                    Token::Ar => {
+                        self.reduce_exp.push(RExp::InfixArrowApply(prec, param));
+                        self.state = S::Infix(Prec::arrow());
+                        break;
+                    }
+                    _ => return Err(expected(loc, "'->' after named function parameter", t)),
+                },
             }
         }
         Ok(())
@@ -437,8 +502,8 @@ impl<'i> Parser<'i> {
                 let app = match op {
                     Op::Arrow => {
                         // lhs -> exp
-                        let arr = Arrow::unnamed(lhs, exp);
-                        self.parse_tree.alloc_exp(Exp::Arr(arr))
+                        let arrow = Arrow::unnamed(lhs, exp);
+                        self.parse_tree.alloc_exp(Exp::Arr(arrow))
                     }
                     Op::Name(op) => {
                         // ((op lhs) exp)
@@ -453,11 +518,18 @@ impl<'i> Parser<'i> {
                 let app = self.parse_tree.alloc_exp(Exp::App(head, exp));
                 self.state = S::AppArg(app);
             }
+            RExp::InfixArrowApply(prec, param) => {
+                // (name : ty) -> exp
+                let arrow = Arrow::named(param.name, param.ty, exp);
+                let arr = self.parse_tree.alloc_exp(Exp::Arr(arrow));
+                self.state = S::InfixOp(prec, arr);
+            }
         }
     }
 
     fn reduce_param(&mut self, param: Param<'i>) {
         match self.reduce_param.pop().unwrap() {
+            RParam::InfixArrowAr(prec) => self.state = S::InfixArrowAr(prec, param),
             RParam::Sig1(name, mut params) => {
                 params.push(param);
                 self.state = S::Sig1(name, params);
