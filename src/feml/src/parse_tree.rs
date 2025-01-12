@@ -19,6 +19,10 @@ impl<'s> ParseTree<'s> {
         }
     }
 
+    pub fn decls(&self) -> Vec<DeclHnd> {
+        (0..self.decl.len()).map(|i| DeclHnd(i as _)).collect()
+    }
+
     pub fn alloc_decl(&mut self, decl: Decl) -> DeclHnd {
         DeclHnd(extend(&mut self.decl, decl))
     }
@@ -70,6 +74,24 @@ pub struct Name<'s> {
     pub loc: Loc,
     pub id: Str<'s>,
     pub is_operator: bool,
+}
+
+impl<'s> Name<'s> {
+    pub fn ident(loc: Loc, id: Str<'s>) -> Self {
+        Self {
+            loc,
+            id,
+            is_operator: false,
+        }
+    }
+
+    pub fn operator(loc: Loc, id: Str<'s>) -> Self {
+        Self {
+            loc,
+            id,
+            is_operator: true,
+        }
+    }
 }
 
 /// Top-level declarations.
@@ -277,11 +299,11 @@ mod test {
             let str_refl = int.intern("refl");
             let str_type = int.intern("type");
             let str_x = int.intern("x");
-            let nm_A = Name { loc, id: str_A, is_operator: false };
-            let nm_eq = Name { loc, id: str_eq, is_operator: true };
-            let nm_refl = Name { loc, id: str_refl, is_operator: false };
-            let nm_type = Name { loc, id: str_type, is_operator: false };
-            let nm_x = Name { loc, id: str_x, is_operator: false };
+            let nm_A = Name::ident(loc, str_A);
+            let nm_eq = Name::operator(loc, str_eq);
+            let nm_refl = Name::ident(loc, str_refl);
+            let nm_type = Name::ident(loc, str_type);
+            let nm_x = Name::ident(loc, str_x);
             let var_A = pt.alloc_exp(Exp::Var(nm_A));
             let var_type = pt.alloc_exp(Exp::Var(nm_type));
             let var_x = pt.alloc_exp(Exp::Var(nm_x));

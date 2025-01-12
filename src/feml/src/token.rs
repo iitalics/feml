@@ -8,6 +8,14 @@ pub enum Error {
     InvalidChar(Loc, char),
 }
 
+impl Error {
+    pub fn loc(&self) -> Loc {
+        match self {
+            Error::InvalidChar(loc, _) => *loc,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -80,9 +88,9 @@ impl fmt::Display for Token<'_> {
         if let Some(s) = self.to_static_str() {
             write!(f, "'{s}'")
         } else if matches!(self, Token::Ident { .. }) {
-            write!(f, "<identifier>")
+            write!(f, "identifier")
         } else {
-            write!(f, "<operator>")
+            write!(f, "operator")
         }
     }
 }
@@ -181,7 +189,7 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    fn loc(&self) -> Loc {
+    pub fn loc(&self) -> Loc {
         Loc {
             byte: self.byte,
             line: self.line,
