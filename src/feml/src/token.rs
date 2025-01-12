@@ -31,9 +31,9 @@ pub struct Loc {
     /// Offset from start of input.
     pub byte: usize,
     /// Lines from start of input (first line will be `0`).
-    pub line: usize,
+    pub line: u32,
     /// Column from start of line (beginning of line will be `0`).
-    pub col: usize,
+    pub col: u32,
 }
 
 impl fmt::Display for Loc {
@@ -173,7 +173,7 @@ fn ident_to_token(id: &str) -> Token<'_> {
 pub struct Tokenizer<'a> {
     input: &'a str,
     byte: usize,
-    line: usize,
+    line: u32,
     bol: usize,
 }
 
@@ -193,7 +193,7 @@ impl<'a> Tokenizer<'a> {
         Loc {
             byte: self.byte,
             line: self.line,
-            col: self.byte - self.bol,
+            col: (self.byte - self.bol).try_into().unwrap(),
         }
     }
 
@@ -212,7 +212,7 @@ impl<'a> Tokenizer<'a> {
     fn forward(&mut self, ofs: usize) {
         for (i, b) in self.input[..ofs].bytes().enumerate() {
             if b == b'\n' {
-                self.line += 1;
+                self.line = self.line.checked_add(1).unwrap();
                 self.bol = self.byte + i + 1;
             }
         }
