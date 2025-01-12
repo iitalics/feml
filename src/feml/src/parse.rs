@@ -99,17 +99,17 @@ enum S<'i> {
     Error,
     Top,
     Def,
-    Def1(Loc, SigHnd),
-    Def2(Loc, SigHnd, TyHnd),
+    DefEq(Loc, SigHnd),
+    DefSm(Loc, SigHnd, TyHnd),
     Name,
     NameOp(Loc),
     NameOpRP(Name<'i>),
     Sig,
-    Sig1(Name<'i>, Vec<Param<'i>>),
+    SigParams(Name<'i>, Vec<Param<'i>>),
     Param,
-    Param1,
-    Param2(Name<'i>),
-    Param3(Name<'i>, TyHnd),
+    ParamName,
+    ParamCl(Name<'i>),
+    ParamRP(Name<'i>, TyHnd),
     Exp,
     Infix(Prec),
     InfixOp(Prec, ExpHnd),
@@ -125,26 +125,26 @@ enum S<'i> {
 
 // parser reduction for Name type
 enum RName {
-    Sig1,
+    SigParams,
     ExpVar,
 }
 
 // parser reduction for Sig type
 enum RSig {
-    Def1(Loc),
+    DefEq(Loc),
 }
 
 // parser reduction for Param type
 enum RParam<'i> {
-    Sig1(Name<'i>, Vec<Param<'i>>),
+    SigParam(Name<'i>, Vec<Param<'i>>),
     InfixArrowAr(Prec),
 }
 
 // parser reduction for Exp type
 enum RExp<'i> {
-    Def2(Loc, SigHnd),
+    DefSm(Loc, SigHnd),
     Sig(Name<'i>, Vec<Param<'i>>),
-    Param3(Name<'i>),
+    ParamRP(Name<'i>),
     InfixOp(Prec),
     InfixOpApply(Prec, ExpHnd, Op<'i>),
     AppArg,
@@ -184,21 +184,21 @@ impl<'i> Parser<'i> {
                 //   "def" <sig> "=" <exp> ";"
                 S::Def => match t {
                     Token::Kw(Keyword::Def) => {
-                        self.reduce_sig.push(RSig::Def1(loc));
+                        self.reduce_sig.push(RSig::DefEq(loc));
                         self.state = S::Sig;
                         break;
                     }
                     _ => return Err(expected(loc, "'def'", t)),
                 },
-                S::Def1(loc_def, sig) => match t {
+                S::DefEq(loc_def, sig) => match t {
                     Token::Eq => {
-                        self.reduce_exp.push(RExp::Def2(loc_def, sig));
+                        self.reduce_exp.push(RExp::DefSm(loc_def, sig));
                         self.state = S::Exp;
                         break;
                     }
                     _ => return Err(expected(loc, "'=' after signature", t)),
                 },
-                S::Def2(loc_def, sig, body) => match t {
+                S::DefSm(loc_def, sig, body) => match t {
                     Token::Sm => {
                         self.parse_tree.alloc_decl(Decl::Def { loc_def, sig, body });
                         self.state = S::Top;
@@ -240,13 +240,13 @@ impl<'i> Parser<'i> {
 
                 // <sig> ::= <name> {<param>} ":" <ty>
                 S::Sig => {
-                    self.reduce_name.push(RName::Sig1);
+                    self.reduce_name.push(RName::SigParams);
                     self.state = S::Name;
                     continue;
                 }
-                S::Sig1(name, params) => match t {
+                S::SigParams(name, params) => match t {
                     Token::LP => {
-                        self.reduce_param.push(RParam::Sig1(name, params));
+                        self.reduce_param.push(RParam::SigParam(name, params));
                         self.state = S::Param;
                         continue;
                     }
@@ -262,30 +262,30 @@ impl<'i> Parser<'i> {
                 S::Param => match t {
                     Token::LP => {
                         // TODO: "[name : ty]"
-                        self.state = S::Param1;
+                        self.state = S::ParamName;
                         break;
                     }
                     _ => return Err(expected(loc, "'('", t)),
                 },
-                S::Param1 => match t {
+                S::ParamName => match t {
                     // FIXME: currently this only allows params to be <id>, but the BNF
                     // says we should support <name>, ie "def f ((+) : A) ..."
                     Token::Ident(ident) => {
                         let name = Name::ident(loc, self.intern.intern(ident));
-                        self.state = S::Param2(name);
+                        self.state = S::ParamCl(name);
                         break;
                     }
                     _ => return Err(expected(loc, "identifier", t)),
                 },
-                S::Param2(name) => match t {
+                S::ParamCl(name) => match t {
                     Token::Cl => {
-                        self.reduce_exp.push(RExp::Param3(name));
+                        self.reduce_exp.push(RExp::ParamRP(name));
                         self.state = S::Exp;
                         break;
                     }
                     _ => return Err(expected(loc, "':'", t)),
                 },
-                S::Param3(name, ty) => match t {
+                S::ParamRP(name, ty) => match t {
                     Token::RP => {
                         self.reduce_param(Param { name, ty });
                         break;
@@ -430,7 +430,7 @@ impl<'i> Parser<'i> {
                         // currently seen "(id :" so now we commit to this being arrow
                         // syntax
                         self.reduce_param.push(RParam::InfixArrowAr(prec));
-                        self.reduce_exp.push(RExp::Param3(name));
+                        self.reduce_exp.push(RExp::ParamRP(name));
                         self.state = S::Exp;
                         break;
                     }
@@ -469,7 +469,7 @@ impl<'i> Parser<'i> {
 
     fn reduce_name(&mut self, name: Name<'i>) {
         match self.reduce_name.pop().unwrap() {
-            RName::Sig1 => self.state = S::Sig1(name, vec![]),
+            RName::SigParams => self.state = S::SigParams(name, vec![]),
             RName::ExpVar => {
                 let var = self.parse_tree.alloc_exp(Exp::Var(name));
                 self.reduce_exp(var);
@@ -479,14 +479,14 @@ impl<'i> Parser<'i> {
 
     fn reduce_sig(&mut self, sig: SigHnd) {
         match self.reduce_sig.pop().unwrap() {
-            RSig::Def1(loc) => self.state = S::Def1(loc, sig),
+            RSig::DefEq(loc) => self.state = S::DefEq(loc, sig),
         }
     }
 
     fn reduce_exp(&mut self, exp: ExpHnd) {
         match self.reduce_exp.pop().unwrap() {
-            RExp::Def2(loc, sig) => self.state = S::Def2(loc, sig, exp),
-            RExp::Param3(name) => self.state = S::Param3(name, exp),
+            RExp::DefSm(loc, sig) => self.state = S::DefSm(loc, sig, exp),
+            RExp::ParamRP(name) => self.state = S::ParamRP(name, exp),
             RExp::AppArg => self.state = S::AppArg(exp),
             RExp::InfixOp(prec) => self.state = S::InfixOp(prec, exp),
             RExp::TermRP => self.state = S::TermRP(exp),
@@ -530,9 +530,9 @@ impl<'i> Parser<'i> {
     fn reduce_param(&mut self, param: Param<'i>) {
         match self.reduce_param.pop().unwrap() {
             RParam::InfixArrowAr(prec) => self.state = S::InfixArrowAr(prec, param),
-            RParam::Sig1(name, mut params) => {
+            RParam::SigParam(name, mut params) => {
                 params.push(param);
-                self.state = S::Sig1(name, params);
+                self.state = S::SigParams(name, params);
             }
         }
     }
