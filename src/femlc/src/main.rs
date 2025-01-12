@@ -15,36 +15,36 @@ fn main() {
         line: 0,
     };
 
-    let id_f = int.intern("f");
-    let id_x = int.intern("x");
-    let id_A = int.intern("A");
-    let nm_f = Name { loc, id: id_f, is_oper: false };
-    let nm_x = Name { loc, id: id_x, is_oper: false };
-    let nm_A = Name { loc, id: id_A, is_oper: false };
+    let str_id = int.intern("id");
+    let str_x = int.intern("x");
+    let str_A = int.intern("A");
+    let nm_id = Name { loc, id: str_id, is_oper: false };
+    let nm_x = Name { loc, id: str_x, is_oper: false };
+    let nm_A = Name { loc, id: str_A, is_oper: false };
     let var_x = pt.alloc_exp(Exp::Var(nm_x));
     let var_A = pt.alloc_exp(Exp::Var(nm_A));
-    let param_x = Param { loc, id: id_x, ty: var_A };
-    let sig_f = pt.alloc_sig(Sig {
-        name: nm_f,
+    let param_x = Param { loc, id: str_x, ty: var_A };
+    let sig_id = pt.alloc_sig(Sig {
+        name: nm_id,
         params: vec![param_x],
         ret_ty: var_A,
     });
-    let decl_f = pt.alloc_decl(Decl::Def {
+    let decl_id = pt.alloc_decl(Decl::Def {
         loc,
-        sig: sig_f,
+        sig: sig_id,
         body: var_x,
     });
 
-    println!("{}", pt.display_decl(&int, decl_f));
+    println!("{}", pt.display_decl(&int, decl_id));
 
-    let id_eq = int.intern("==");
-    let id_refl = int.intern("refl");
-    let id_type = int.intern("type");
-    let nm_eq = Name { loc, id: id_eq, is_oper: true };
-    let nm_refl = Name { loc, id: id_refl, is_oper: false };
-    let nm_type = Name { loc, id: id_type, is_oper: false };
+    let str_eq = int.intern("==");
+    let str_refl = int.intern("refl");
+    let str_type = int.intern("type");
+    let nm_eq = Name { loc, id: str_eq, is_oper: true };
+    let nm_refl = Name { loc, id: str_refl, is_oper: false };
+    let nm_type = Name { loc, id: str_type, is_oper: false };
     let var_type = pt.alloc_exp(Exp::Var(nm_type));
-    let param_A = Param { loc, id: id_A, ty: var_type };
+    let param_A = Param { loc, id: str_A, ty: var_type };
     let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arr {
         dom: var_A,
         rng: var_type,
