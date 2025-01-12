@@ -65,6 +65,9 @@ enum S<'i> {
     Param2(Loc, Str<'i>),
     Param3(Loc, Str<'i>, TyHnd),
     Exp,
+    TermRP(ExpHnd),
+    App(ExpHnd),
+    Term,
 }
 
 // parser reduction for Sig type
@@ -77,6 +80,9 @@ enum RExp<'i> {
     Def2(Loc, SigHnd),
     Sig(Name<'i>, Vec<Param<'i>>),
     Param3(Loc, Str<'i>),
+    AppArgs,
+    AppApply(ExpHnd),
+    TermRP,
 }
 
 // parser reduction for Param type
@@ -107,13 +113,7 @@ impl<'i> Parser<'i> {
                         self.state = S::Def;
                         continue;
                     }
-                    _ => {
-                        return Err(unexpected(
-                            loc,
-                            t,
-                            "'def' or 'data' declaration",
-                        ))
-                    }
+                    _ => return Err(unexpected(loc, t, "'def' or 'data' declaration")),
                 },
 
                 // <def> ::=
@@ -207,17 +207,57 @@ impl<'i> Parser<'i> {
                 },
 
                 // <exp> ::=
+                //   "fn" <...>
+                //   "match" <...>
+                //   <app> {<oper> <app>}
+                S::Exp => {
+                    // TODO: Keyword::Fn
+                    // TODO: Keyword::Match
+                    self.reduce_exp.push(RExp::AppArgs);
+                    self.state = S::Term;
+                    continue;
+                }
+
+                // <app> ::=
+                //   <term> |
+                //   <app> <arg>
+                // <arg> ::=
+                //   <term>
+                S::App(head) => match t {
+                    Token::Ident(_) | Token::LP => {
+                        self.reduce_exp.push(RExp::AppApply(head));
+                        self.state = S::Term;
+                        continue;
+                    }
+                    _ => {
+                        self.reduce_exp(head);
+                        continue;
+                    }
+                },
+
+                // <term> ::=
                 //   <name>
-                S::Exp => match t {
+                //   "(" <exp> ")"
+                S::Term => match t {
                     Token::Ident(ident) => {
                         let name = Name::ident(loc, self.intern.intern(ident));
                         let var = self.parse_tree.alloc_exp(Exp::Var(name));
                         self.reduce_exp(var);
                         break;
                     }
-                    _ => {
-                        return Err(unexpected(loc, t, "expression"));
+                    Token::LP => {
+                        self.reduce_exp.push(RExp::TermRP);
+                        self.state = S::Exp;
+                        break;
                     }
+                    _ => return Err(unexpected(loc, t, "expression")),
+                },
+                S::TermRP(exp) => match t {
+                    Token::RP => {
+                        self.reduce_exp(exp);
+                        break;
+                    }
+                    _ => return Err(expected(loc, "')' after expression", t)),
                 },
             }
         }
@@ -242,6 +282,8 @@ impl<'i> Parser<'i> {
         match self.reduce_exp.pop().unwrap() {
             RExp::Def2(loc, sig) => self.state = S::Def2(loc, sig, exp),
             RExp::Param3(loc, id) => self.state = S::Param3(loc, id, exp),
+            RExp::AppArgs => self.state = S::App(exp),
+            RExp::TermRP => self.state = S::TermRP(exp),
             RExp::Sig(name, params) => {
                 let sig = self.parse_tree.alloc_sig(Sig {
                     name,
@@ -249,6 +291,10 @@ impl<'i> Parser<'i> {
                     ret_ty: exp,
                 });
                 self.reduce_sig(sig)
+            }
+            RExp::AppApply(fun) => {
+                let app = self.parse_tree.alloc_exp(Exp::App(fun, exp));
+                self.state = S::App(app);
             }
         }
     }

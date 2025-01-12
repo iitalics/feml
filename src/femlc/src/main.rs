@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 static INPUT: &str = "
 def add (m : nat) (n : nat) : nat =
-  zero;
+  (f x) (y z);
 ";
 
 fn main() -> ExitCode {
