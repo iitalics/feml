@@ -128,23 +128,22 @@ pub struct Param<'s> {
 /// Expressions.
 #[derive(Clone)]
 pub enum Exp<'s> {
+    // x
     Var(Name<'s>),
-    App(App<'s>),
+    // f a
+    App(ExpHnd, Arg),
+    // d -> r
     Arr(Arr),
 }
+
+// TODO: named/explicit args
+type Arg = ExpHnd;
 
 /// Arrow types.
 #[derive(Clone)]
 pub struct Arr {
     pub dom: ExpHnd,
     pub rng: ExpHnd,
-}
-
-/// Applications.
-#[derive(Clone)]
-pub struct App<'s> {
-    pub head: Name<'s>,
-    pub args: Vec<ExpHnd>,
 }
 
 fn extend<T>(nodes: &mut Vec<T>, item: T) -> Hnd {
@@ -255,15 +254,13 @@ impl<'s> ParseTree<'s> {
                 }
                 Ok(())
             }
-            Exp::App(App { head, args }) => {
+            Exp::App(fun, arg) => {
                 if prec > 1 {
                     write!(f, "(")?;
                 }
-                self.fmt_name(f, int, head)?;
-                for arg in args.iter() {
-                    write!(f, " ")?;
-                    self.fmt_exp(f, int, *arg, 2)?;
-                }
+                self.fmt_exp(f, int, *fun, 1)?;
+                write!(f, " ")?;
+                self.fmt_exp(f, int, *arg, 2)?;
                 if prec > 1 {
                     write!(f, ")")?;
                 }
@@ -305,6 +302,7 @@ mod test {
             let nm_type = Name::ident(loc, str_type);
             let nm_x = Name::ident(loc, str_x);
             let var_A = pt.alloc_exp(Exp::Var(nm_A));
+            let var_eq = pt.alloc_exp(Exp::Var(nm_eq));
             let var_type = pt.alloc_exp(Exp::Var(nm_type));
             let var_x = pt.alloc_exp(Exp::Var(nm_x));
             // (A : type)
@@ -317,10 +315,9 @@ mod test {
                 rng: var_type,
             }));
             // (==) A x x
-            let exp_x_eq_x = pt.alloc_exp(Exp::App(App {
-                head: nm_eq,
-                args: vec![var_A, var_x, var_x],
-            }));
+            let exp_x_eq_x = pt.alloc_exp(Exp::App(var_eq, var_A));
+            let exp_x_eq_x = pt.alloc_exp(Exp::App(exp_x_eq_x, var_x));
+            let exp_x_eq_x = pt.alloc_exp(Exp::App(exp_x_eq_x, var_x));
             // (==) (A : type) (x : A) : A -> type
             let sig_eq = pt.alloc_sig(Sig {
                 name: nm_eq,
@@ -345,5 +342,20 @@ mod test {
             pt.display_decl(&int, decl).to_string(),
             "data (==) (A : type) (x : A) : A -> type { refl : (==) A x x; };",
         );
+
+        let exp = {
+            let loc = Loc::default();
+            let str_x = int.intern("x");
+            let str_y = int.intern("y");
+            let nm_x = Name::ident(loc, str_x);
+            let nm_y = Name::ident(loc, str_y);
+            let var_x = pt.alloc_exp(Exp::Var(nm_x));
+            let var_y = pt.alloc_exp(Exp::Var(nm_y));
+            let exp_x_x = pt.alloc_exp(Exp::App(var_x, var_x));
+            let exp_y_y = pt.alloc_exp(Exp::App(var_y, var_y));
+            pt.alloc_exp(Exp::App(exp_x_x, exp_y_y))
+        };
+
+        assert_eq!(pt.display_exp(&int, exp).to_string(), "x x (y y)");
     }
 }
