@@ -4,8 +4,7 @@ use feml::token::Tokenizer;
 use std::process::ExitCode;
 
 static INPUT: &str = "
-def add (m : nat) (n : nat) : nat =
-  (f x) (y z);
+def foo : A -> B -> C = g x + h y + z;
 ";
 
 fn main() -> ExitCode {

@@ -51,6 +51,44 @@ pub struct Parser<'i> {
     reduce_param: Vec<RParam<'i>>,
 }
 
+// infix operator precedence
+#[derive(Copy, Clone)]
+enum Prec {
+    Left(i16),
+    Right(i16),
+}
+
+impl Prec {
+    fn from_op(op: &str) -> Self {
+        match op {
+            "->" => Prec::Right(1),
+            "==" => Prec::Left(4),
+            "+" => Prec::Left(5),
+            "*" => Prec::Left(6),
+            _ => Prec::Left(2),
+        }
+    }
+
+    fn binding_power(&self) -> i16 {
+        match *self {
+            Prec::Left(bp) | Prec::Right(bp) => bp,
+        }
+    }
+
+    fn binds_rhs(&self, rhs: Prec) -> bool {
+        match *self {
+            Prec::Left(bp) => bp < rhs.binding_power(),
+            Prec::Right(bp) => bp <= rhs.binding_power(),
+        }
+    }
+}
+
+impl Default for Prec {
+    fn default() -> Self {
+        Prec::Left(i16::MIN)
+    }
+}
+
 // parser state
 enum S<'i> {
     Error,
@@ -65,9 +103,12 @@ enum S<'i> {
     Param2(Loc, Str<'i>),
     Param3(Loc, Str<'i>, TyHnd),
     Exp,
-    TermRP(ExpHnd),
-    App(ExpHnd),
+    Infix(Prec),
+    InfixOp(Prec, ExpHnd),
+    App,
+    AppArg(ExpHnd),
     Term,
+    TermRP(ExpHnd),
 }
 
 // parser reduction for Sig type
@@ -75,19 +116,21 @@ enum RSig {
     Def1(Loc),
 }
 
+// parser reduction for Param type
+enum RParam<'i> {
+    Sig1(Name<'i>, Vec<Param<'i>>),
+}
+
 // parser reduction for Exp type
 enum RExp<'i> {
     Def2(Loc, SigHnd),
     Sig(Name<'i>, Vec<Param<'i>>),
     Param3(Loc, Str<'i>),
-    AppArgs,
+    InfixOp(Prec),
+    InfixOpApply(Prec, ExpHnd, Name<'i>),
+    AppArg,
     AppApply(ExpHnd),
     TermRP,
-}
-
-// parser reduction for Param type
-enum RParam<'i> {
-    Sig1(Name<'i>, Vec<Param<'i>>),
 }
 
 impl<'i> Parser<'i> {
@@ -203,21 +246,51 @@ impl<'i> Parser<'i> {
                 // <exp> ::=
                 //   "fn" <...>
                 //   "match" <...>
-                //   <app> {<oper> <app>}
+                //   <infix>
                 S::Exp => {
                     // TODO: Keyword::Fn
                     // TODO: Keyword::Match
-                    self.reduce_exp.push(RExp::AppArgs);
-                    self.state = S::Term;
+                    self.state = S::Infix(Prec::default());
                     continue;
                 }
 
+                // <infix> ::=
+                //   <app> {<oper> <app>}
+                S::Infix(prec) => {
+                    self.reduce_exp.push(RExp::InfixOp(prec));
+                    self.state = S::App;
+                    continue;
+                }
+                S::InfixOp(prec, lhs) => {
+                    let op_and_prec = match t {
+                        Token::Oper(op) => {
+                            let op_prec = Prec::from_op(op);
+                            prec.binds_rhs(op_prec).then_some((op, op_prec))
+                        }
+                        _ => None,
+                    };
+
+                    let Some((op, rhs_prec)) = op_and_prec else {
+                        self.reduce_exp(lhs);
+                        continue;
+                    };
+
+                    let op = Name::operator(loc, self.intern.intern(op));
+                    self.reduce_exp.push(RExp::InfixOpApply(prec, lhs, op));
+                    self.state = S::Infix(rhs_prec);
+                    break;
+                }
+
                 // <app> ::=
-                //   <term> |
-                //   <app> <arg>
+                //   <term> {<arg>}
                 // <arg> ::=
                 //   <term>
-                S::App(head) => match t {
+                S::App => {
+                    self.reduce_exp.push(RExp::AppArg);
+                    self.state = S::Term;
+                    continue;
+                }
+                S::AppArg(head) => match t {
                     Token::Ident(_) | Token::LP => {
                         self.reduce_exp.push(RExp::AppApply(head));
                         self.state = S::Term;
@@ -276,7 +349,8 @@ impl<'i> Parser<'i> {
         match self.reduce_exp.pop().unwrap() {
             RExp::Def2(loc, sig) => self.state = S::Def2(loc, sig, exp),
             RExp::Param3(loc, id) => self.state = S::Param3(loc, id, exp),
-            RExp::AppArgs => self.state = S::App(exp),
+            RExp::AppArg => self.state = S::AppArg(exp),
+            RExp::InfixOp(prec) => self.state = S::InfixOp(prec, exp),
             RExp::TermRP => self.state = S::TermRP(exp),
             RExp::Sig(name, params) => {
                 let sig = self.parse_tree.alloc_sig(Sig {
@@ -286,9 +360,15 @@ impl<'i> Parser<'i> {
                 });
                 self.reduce_sig(sig)
             }
+            RExp::InfixOpApply(prec, lhs, op) => {
+                let op = self.parse_tree.alloc_exp(Exp::Var(op));
+                let apply = self.parse_tree.alloc_exp(Exp::App(op, lhs));
+                let apply = self.parse_tree.alloc_exp(Exp::App(apply, exp));
+                self.state = S::InfixOp(prec, apply);
+            }
             RExp::AppApply(head) => {
                 let apply = self.parse_tree.alloc_exp(Exp::App(head, exp));
-                self.state = S::App(apply);
+                self.state = S::AppArg(apply);
             }
         }
     }
