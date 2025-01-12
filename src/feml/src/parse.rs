@@ -537,3 +537,37 @@ impl<'i> Parser<'i> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::token::Tokenizer;
+
+    #[test]
+    fn test_parse_print() {
+        static INPUT: &str = "
+def f : (Q : A -> type) -> (x : A)
+     -> P == Q
+     -> P x == Q x
+=
+  x + (y + w) * z;
+";
+
+        // named infix operators get made into prefix operators with the appropriate order
+        // of operations
+        static OUTPUT: &str = "
+def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) ((+) y w) z);
+";
+
+        let int = Intern::new();
+        let mut prs = Parser::new(&int);
+        let mut tkz = Tokenizer::new(INPUT);
+        for r in &mut tkz {
+            let (loc, t) = r.unwrap();
+            prs.feed(loc, t).unwrap();
+        }
+        let tree = prs.end_of_file(tkz.loc()).unwrap();
+        let decl = tree.decls()[0];
+        assert_eq!(tree.display_decl(&int, decl).to_string(), OUTPUT.trim());
+    }
+}
