@@ -2,7 +2,7 @@ use std::fmt;
 use std::mem;
 
 use crate::intern::Intern;
-use crate::parse_tree::{Arr, Decl, Exp, Name, Param, ParseTree, Sig};
+use crate::parse_tree::{Arrow, Decl, Exp, Name, Param, ParseTree, Sig};
 use crate::parse_tree::{ExpHnd, SigHnd, TyHnd};
 use crate::token::{Keyword, Loc, Token};
 
@@ -88,9 +88,9 @@ impl Prec {
 }
 
 enum Op<'i> {
-    // arrow operator
-    Arr,
-    // named operator
+    // arrow operator (a -> b)
+    Arrow,
+    // named operator (a * b)
     Name(Name<'i>),
 }
 
@@ -310,7 +310,7 @@ impl<'i> Parser<'i> {
                     let op_and_prec = match t {
                         Token::Ar => {
                             let op_prec = Prec::arrow();
-                            prec.binds_rhs(op_prec).then_some((Op::Arr, op_prec))
+                            prec.binds_rhs(op_prec).then_some((Op::Arrow, op_prec))
                         }
                         Token::Oper(op) => {
                             let op_prec = Prec::by_name(op);
@@ -435,9 +435,9 @@ impl<'i> Parser<'i> {
             }
             RExp::InfixOpApply(prec, lhs, op) => {
                 let app = match op {
-                    Op::Arr => {
+                    Op::Arrow => {
                         // lhs -> exp
-                        let arr = Arr { dom: lhs, rng: exp };
+                        let arr = Arrow::unnamed(lhs, exp);
                         self.parse_tree.alloc_exp(Exp::Arr(arr))
                     }
                     Op::Name(op) => {

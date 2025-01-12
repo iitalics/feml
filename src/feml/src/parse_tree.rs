@@ -133,7 +133,7 @@ pub enum Exp<'s> {
     // f a
     App(ExpHnd, Arg),
     // d -> r
-    Arr(Arr),
+    Arr(Arrow<'s>),
 }
 
 // TODO: named/explicit args
@@ -141,9 +141,28 @@ type Arg = ExpHnd;
 
 /// Arrow types.
 #[derive(Clone)]
-pub struct Arr {
+pub struct Arrow<'s> {
+    pub dom_name: Option<Name<'s>>,
     pub dom: ExpHnd,
     pub rng: ExpHnd,
+}
+
+impl<'s> Arrow<'s> {
+    pub fn unnamed(dom: ExpHnd, rng: ExpHnd) -> Self {
+        Self {
+            dom_name: None,
+            dom,
+            rng,
+        }
+    }
+
+    pub fn named(dom_name: Name<'s>, dom: ExpHnd, rng: ExpHnd) -> Self {
+        Self {
+            dom_name: Some(dom_name),
+            dom,
+            rng,
+        }
+    }
 }
 
 fn extend<T>(nodes: &mut Vec<T>, item: T) -> Hnd {
@@ -242,11 +261,22 @@ impl<'s> ParseTree<'s> {
     ) -> fmt::Result {
         match self.view_exp(exp) {
             Exp::Var(name) => self.fmt_name(f, int, name),
-            Exp::Arr(Arr { dom, rng }) => {
+            Exp::Arr(Arrow { dom_name, dom, rng }) => {
                 if prec > 0 {
                     write!(f, "(")?;
                 }
-                self.fmt_exp(f, int, *dom, 1)?;
+                match dom_name {
+                    Some(name) => {
+                        write!(f, "(")?;
+                        self.fmt_name(f, int, name)?;
+                        write!(f, " : ")?;
+                        self.fmt_exp(f, int, *dom, 0)?;
+                        write!(f, ")")?;
+                    }
+                    None => {
+                        self.fmt_exp(f, int, *dom, 1)?;
+                    }
+                }
                 write!(f, " -> ")?;
                 self.fmt_exp(f, int, *rng, 0)?;
                 if prec > 0 {
@@ -310,10 +340,7 @@ mod test {
             // (x : A)
             let param_x = Param { name: nm_x, ty: var_A };
             // A -> type
-            let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arr {
-                dom: var_A,
-                rng: var_type,
-            }));
+            let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, var_type)));
             // (==) A x x
             let exp_x_eq_x = pt.alloc_exp(Exp::App(var_eq, var_A));
             let exp_x_eq_x = pt.alloc_exp(Exp::App(exp_x_eq_x, var_x));
@@ -357,5 +384,26 @@ mod test {
         };
 
         assert_eq!(pt.display_exp(&int, exp).to_string(), "x x (y y)");
+
+        #[allow(non_snake_case)]
+        let ty = {
+            let loc = Loc::default();
+            let str_A = int.intern("A");
+            let str_B = int.intern("B");
+            let str_C = int.intern("C");
+            let str_x = int.intern("x");
+            let nm_A = Name::ident(loc, str_A);
+            let nm_B = Name::ident(loc, str_B);
+            let nm_C = Name::ident(loc, str_C);
+            let nm_x = Name::ident(loc, str_x);
+            let var_A = pt.alloc_exp(Exp::Var(nm_A));
+            let var_B = pt.alloc_exp(Exp::Var(nm_B));
+            let var_C = pt.alloc_exp(Exp::Var(nm_C));
+            let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(nm_x, var_B, var_C)));
+            let arr_A_B_C = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
+            arr_A_B_C
+        };
+
+        assert_eq!(pt.display_exp(&int, ty).to_string(), "A -> (x : B) -> C");
     }
 }
