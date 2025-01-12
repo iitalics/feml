@@ -98,12 +98,12 @@ impl<'s> Name<'s> {
 #[derive(Clone)]
 pub enum Decl {
     Def {
-        loc: Loc,
+        loc_def: Loc,
         sig: SigHnd,
         body: ExpHnd,
     },
     Data {
-        loc: Loc,
+        loc_data: Loc,
         sig: SigHnd,
         ctors: Vec<SigHnd>,
     },
@@ -114,14 +114,14 @@ pub enum Decl {
 pub struct Sig<'s> {
     pub name: Name<'s>,
     pub params: Vec<Param<'s>>,
+    //pub loc_cl : Loc,
     pub ret_ty: TyHnd,
 }
 
 /// Parameters to definitions.
 #[derive(Copy, Clone)]
 pub struct Param<'s> {
-    pub loc: Loc,
-    pub id: Str<'s>,
+    pub name: Name<'s>,
     pub ty: TyHnd,
 }
 
@@ -224,7 +224,7 @@ impl<'s> ParseTree<'s> {
         self.fmt_name(f, int, &sig.name)?;
         for param in sig.params.iter() {
             write!(f, " (")?;
-            f.write_str(int.get(param.id))?;
+            self.fmt_name(f, int, &param.name)?;
             write!(f, " : ")?;
             self.fmt_exp(f, int, param.ty, 0)?;
             write!(f, ")")?;
@@ -306,9 +306,9 @@ mod test {
             let var_type = pt.alloc_exp(Exp::Var(nm_type));
             let var_x = pt.alloc_exp(Exp::Var(nm_x));
             // (A : type)
-            let param_A = Param { loc, id: str_A, ty: var_type };
+            let param_A = Param { name: nm_A, ty: var_type };
             // (x : A)
-            let param_x = Param { loc, id: str_x, ty: var_A };
+            let param_x = Param { name: nm_x, ty: var_A };
             // A -> type
             let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arr {
                 dom: var_A,
@@ -332,7 +332,7 @@ mod test {
             });
             // data (==) {...}
             pt.alloc_decl(Decl::Data {
-                loc,
+                loc_data: loc,
                 sig: sig_eq,
                 ctors: vec![sig_refl],
             })

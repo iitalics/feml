@@ -1,7 +1,7 @@
 use std::fmt;
 use std::mem;
 
-use crate::intern::{Intern, Str};
+use crate::intern::Intern;
 use crate::parse_tree::{Arr, Decl, Exp, Name, Param, ParseTree, Sig};
 use crate::parse_tree::{ExpHnd, SigHnd, TyHnd};
 use crate::token::{Keyword, Loc, Token};
@@ -46,6 +46,7 @@ pub struct Parser<'i> {
     intern: &'i Intern,
     parse_tree: ParseTree<'i>,
     state: S<'i>,
+    reduce_name: Vec<RName>,
     reduce_sig: Vec<RSig>,
     reduce_exp: Vec<RExp<'i>>,
     reduce_param: Vec<RParam<'i>>,
@@ -60,7 +61,7 @@ enum Prec {
 
 impl Prec {
     fn arrow() -> Self {
-        Prec::Right(1)
+        Prec::Right(i16::MIN)
     }
 
     fn by_name(op: &str) -> Self {
@@ -86,12 +87,6 @@ impl Prec {
     }
 }
 
-impl Default for Prec {
-    fn default() -> Self {
-        Prec::Left(i16::MIN)
-    }
-}
-
 enum Op<'i> {
     // arrow operator
     Arr,
@@ -106,19 +101,29 @@ enum S<'i> {
     Def,
     Def1(Loc, SigHnd),
     Def2(Loc, SigHnd, TyHnd),
+    Name,
+    NameOp(Loc),
+    NameOpRP(Name<'i>),
     Sig,
     Sig1(Name<'i>, Vec<Param<'i>>),
     Param,
-    Param1(Loc),
-    Param2(Loc, Str<'i>),
-    Param3(Loc, Str<'i>, TyHnd),
+    Param1,
+    Param2(Name<'i>),
+    Param3(Name<'i>, TyHnd),
     Exp,
     Infix(Prec),
     InfixOp(Prec, ExpHnd),
     App,
     AppArg(ExpHnd),
     Term,
+    TermLP(Loc),
     TermRP(ExpHnd),
+}
+
+// parser reduction for Name type
+enum RName {
+    Sig1,
+    ExpVar,
 }
 
 // parser reduction for Sig type
@@ -135,7 +140,7 @@ enum RParam<'i> {
 enum RExp<'i> {
     Def2(Loc, SigHnd),
     Sig(Name<'i>, Vec<Param<'i>>),
-    Param3(Loc, Str<'i>),
+    Param3(Name<'i>),
     InfixOp(Prec),
     InfixOpApply(Prec, ExpHnd, Op<'i>),
     AppArg,
@@ -149,6 +154,7 @@ impl<'i> Parser<'i> {
             intern,
             parse_tree: ParseTree::new(),
             state: S::Top,
+            reduce_name: vec![],
             reduce_sig: vec![],
             reduce_exp: vec![],
             reduce_param: vec![],
@@ -179,34 +185,60 @@ impl<'i> Parser<'i> {
                     }
                     _ => return Err(expected(loc, "'def'", t)),
                 },
-                S::Def1(loc, sig) => match t {
+                S::Def1(loc_def, sig) => match t {
                     Token::Eq => {
-                        self.reduce_exp.push(RExp::Def2(loc, sig));
+                        self.reduce_exp.push(RExp::Def2(loc_def, sig));
                         self.state = S::Exp;
                         break;
                     }
                     _ => return Err(expected(loc, "'=' after signature", t)),
                 },
-                S::Def2(loc, sig, body) => match t {
+                S::Def2(loc_def, sig, body) => match t {
                     Token::Sm => {
-                        self.parse_tree.alloc_decl(Decl::Def { loc, sig, body });
+                        self.parse_tree.alloc_decl(Decl::Def { loc_def, sig, body });
                         self.state = S::Top;
                         break;
                     }
                     _ => return Err(expected(loc, "';' after expression", t)),
                 },
 
-                // <sig> ::= <name> {<param>} ":" <ty>
-                S::Sig => match t {
+                // <name> ::=
+                //   <ident> | "(" <oper> ")"
+                S::Name => match t {
                     Token::Ident(ident) => {
                         let name = Name::ident(loc, self.intern.intern(ident));
-                        self.state = S::Sig1(name, vec![]);
+                        self.reduce_name(name);
                         break;
                     }
-                    _ => {
-                        return Err(expected(loc, "identifier", t));
+                    Token::LP => {
+                        self.state = S::NameOp(loc);
+                        break;
                     }
+                    _ => return Err(expected(loc, "identifier or (operator)", t)),
                 },
+                S::NameOp(loc_lp) => match t {
+                    Token::Oper(op) => {
+                        // note: "(+)" gets assigned the "(" for its loc, not "+"
+                        let name = Name::operator(loc_lp, self.intern.intern(op));
+                        self.state = S::NameOpRP(name);
+                        break;
+                    }
+                    _ => return Err(expected(loc, "operator name", t)),
+                },
+                S::NameOpRP(name) => match t {
+                    Token::RP => {
+                        self.reduce_name(name);
+                        break;
+                    }
+                    _ => return Err(expected(loc, "')' after operator name", t)),
+                },
+
+                // <sig> ::= <name> {<param>} ":" <ty>
+                S::Sig => {
+                    self.reduce_name.push(RName::Sig1);
+                    self.state = S::Name;
+                    continue;
+                }
                 S::Sig1(name, params) => match t {
                     Token::LP => {
                         self.reduce_param.push(RParam::Sig1(name, params));
@@ -224,30 +256,33 @@ impl<'i> Parser<'i> {
                 // <param> ::= "(" <name> ":" <ty> ")"
                 S::Param => match t {
                     Token::LP => {
-                        self.state = S::Param1(loc);
+                        // TODO: "[name : ty]"
+                        self.state = S::Param1;
                         break;
                     }
                     _ => return Err(expected(loc, "'('", t)),
                 },
-                S::Param1(loc) => match t {
+                S::Param1 => match t {
+                    // FIXME: currently this only allows params to be <id>, but the BNF
+                    // says we should support <name>, ie "def f ((+) : A) ..."
                     Token::Ident(ident) => {
-                        let id = self.intern.intern(ident);
-                        self.state = S::Param2(loc, id);
+                        let name = Name::ident(loc, self.intern.intern(ident));
+                        self.state = S::Param2(name);
                         break;
                     }
                     _ => return Err(expected(loc, "identifier", t)),
                 },
-                S::Param2(loc, id) => match t {
+                S::Param2(name) => match t {
                     Token::Cl => {
-                        self.reduce_exp.push(RExp::Param3(loc, id));
+                        self.reduce_exp.push(RExp::Param3(name));
                         self.state = S::Exp;
                         break;
                     }
                     _ => return Err(expected(loc, "':'", t)),
                 },
-                S::Param3(loc, id, ty) => match t {
+                S::Param3(name, ty) => match t {
                     Token::RP => {
-                        self.reduce_param(Param { loc, id, ty });
+                        self.reduce_param(Param { name, ty });
                         break;
                     }
                     _ => return Err(expected(loc, "')'", t)),
@@ -260,7 +295,7 @@ impl<'i> Parser<'i> {
                 S::Exp => {
                     // TODO: Keyword::Fn
                     // TODO: Keyword::Match
-                    self.state = S::Infix(Prec::default());
+                    self.state = S::Infix(Prec::arrow());
                     continue;
                 }
 
@@ -322,18 +357,30 @@ impl<'i> Parser<'i> {
                 //   <name>
                 //   "(" <exp> ")"
                 S::Term => match t {
-                    Token::Ident(ident) => {
-                        let name = Name::ident(loc, self.intern.intern(ident));
-                        let var = self.parse_tree.alloc_exp(Exp::Var(name));
-                        self.reduce_exp(var);
-                        break;
+                    Token::Ident(_) => {
+                        self.reduce_name.push(RName::ExpVar);
+                        self.state = S::Name;
+                        continue;
                     }
                     Token::LP => {
-                        self.reduce_exp.push(RExp::TermRP);
-                        self.state = S::Exp;
+                        self.state = S::TermLP(loc);
                         break;
                     }
                     _ => return Err(unexpected(loc, t, "expression")),
+                },
+                S::TermLP(loc_lp) => match t {
+                    // if we see "(<oper>" then we decide that we are parsing <name> ::=
+                    // (<oper>), otherwise we are parsing <term> ::= (<exp>).
+                    Token::Oper(_) => {
+                        self.reduce_name.push(RName::ExpVar);
+                        self.state = S::NameOp(loc_lp);
+                        continue;
+                    }
+                    _ => {
+                        self.reduce_exp.push(RExp::TermRP);
+                        self.state = S::Exp;
+                        continue;
+                    }
                 },
                 S::TermRP(exp) => match t {
                     Token::RP => {
@@ -355,6 +402,16 @@ impl<'i> Parser<'i> {
         }
     }
 
+    fn reduce_name(&mut self, name: Name<'i>) {
+        match self.reduce_name.pop().unwrap() {
+            RName::Sig1 => self.state = S::Sig1(name, vec![]),
+            RName::ExpVar => {
+                let var = self.parse_tree.alloc_exp(Exp::Var(name));
+                self.reduce_exp(var);
+            }
+        }
+    }
+
     fn reduce_sig(&mut self, sig: SigHnd) {
         match self.reduce_sig.pop().unwrap() {
             RSig::Def1(loc) => self.state = S::Def1(loc, sig),
@@ -364,7 +421,7 @@ impl<'i> Parser<'i> {
     fn reduce_exp(&mut self, exp: ExpHnd) {
         match self.reduce_exp.pop().unwrap() {
             RExp::Def2(loc, sig) => self.state = S::Def2(loc, sig, exp),
-            RExp::Param3(loc, id) => self.state = S::Param3(loc, id, exp),
+            RExp::Param3(name) => self.state = S::Param3(name, exp),
             RExp::AppArg => self.state = S::AppArg(exp),
             RExp::InfixOp(prec) => self.state = S::InfixOp(prec, exp),
             RExp::TermRP => self.state = S::TermRP(exp),
