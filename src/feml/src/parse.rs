@@ -132,9 +132,7 @@ impl<'i> Parser<'i> {
                         self.state = S::Exp;
                         break;
                     }
-                    _ => {
-                        return Err(expected(loc, "'=' after signature", t));
-                    }
+                    _ => return Err(expected(loc, "'=' after signature", t)),
                 },
                 S::Def2(loc, sig, body) => match t {
                     Token::Sm => {
@@ -142,9 +140,7 @@ impl<'i> Parser<'i> {
                         self.state = S::Top;
                         break;
                     }
-                    _ => {
-                        return Err(expected(loc, "';' after expression", t));
-                    }
+                    _ => return Err(expected(loc, "';' after expression", t)),
                 },
 
                 // <sig> ::= <name> {<param>} ":" <ty>
@@ -169,9 +165,7 @@ impl<'i> Parser<'i> {
                         self.state = S::Exp;
                         break;
                     }
-                    _ => {
-                        return Err(expected(loc, "'(name : ty)' or ':'", t));
-                    }
+                    _ => return Err(expected(loc, "'(name : ty)' or ':'", t)),
                 },
 
                 // <param> ::= "(" <name> ":" <ty> ")"
@@ -292,9 +286,9 @@ impl<'i> Parser<'i> {
                 });
                 self.reduce_sig(sig)
             }
-            RExp::AppApply(fun) => {
-                let app = self.parse_tree.alloc_exp(Exp::App(fun, exp));
-                self.state = S::App(app);
+            RExp::AppApply(head) => {
+                let apply = self.parse_tree.alloc_exp(Exp::App(head, exp));
+                self.state = S::App(apply);
             }
         }
     }
