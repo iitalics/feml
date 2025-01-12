@@ -2,7 +2,7 @@ use std::fmt;
 use std::mem;
 
 use crate::intern::{Intern, Str};
-use crate::parse_tree::{Decl, Exp, Name, Param, ParseTree, Sig};
+use crate::parse_tree::{Arr, Decl, Exp, Name, Param, ParseTree, Sig};
 use crate::parse_tree::{ExpHnd, SigHnd, TyHnd};
 use crate::token::{Keyword, Loc, Token};
 
@@ -59,9 +59,12 @@ enum Prec {
 }
 
 impl Prec {
-    fn from_op(op: &str) -> Self {
+    fn arrow() -> Self {
+        Prec::Right(1)
+    }
+
+    fn by_name(op: &str) -> Self {
         match op {
-            "->" => Prec::Right(1),
             "==" => Prec::Left(4),
             "+" => Prec::Left(5),
             "*" => Prec::Left(6),
@@ -87,6 +90,13 @@ impl Default for Prec {
     fn default() -> Self {
         Prec::Left(i16::MIN)
     }
+}
+
+enum Op<'i> {
+    // arrow operator
+    Arr,
+    // named operator
+    Name(Name<'i>),
 }
 
 // parser state
@@ -127,7 +137,7 @@ enum RExp<'i> {
     Sig(Name<'i>, Vec<Param<'i>>),
     Param3(Loc, Str<'i>),
     InfixOp(Prec),
-    InfixOpApply(Prec, ExpHnd, Name<'i>),
+    InfixOpApply(Prec, ExpHnd, Op<'i>),
     AppArg,
     AppApply(ExpHnd),
     TermRP,
@@ -263,9 +273,16 @@ impl<'i> Parser<'i> {
                 }
                 S::InfixOp(prec, lhs) => {
                     let op_and_prec = match t {
+                        Token::Ar => {
+                            let op_prec = Prec::arrow();
+                            prec.binds_rhs(op_prec).then_some((Op::Arr, op_prec))
+                        }
                         Token::Oper(op) => {
-                            let op_prec = Prec::from_op(op);
-                            prec.binds_rhs(op_prec).then_some((op, op_prec))
+                            let op_prec = Prec::by_name(op);
+                            prec.binds_rhs(op_prec).then(|| {
+                                let name = Name::operator(loc, self.intern.intern(op));
+                                (Op::Name(name), op_prec)
+                            })
                         }
                         _ => None,
                     };
@@ -275,7 +292,6 @@ impl<'i> Parser<'i> {
                         continue;
                     };
 
-                    let op = Name::operator(loc, self.intern.intern(op));
                     self.reduce_exp.push(RExp::InfixOpApply(prec, lhs, op));
                     self.state = S::Infix(rhs_prec);
                     break;
@@ -361,14 +377,24 @@ impl<'i> Parser<'i> {
                 self.reduce_sig(sig)
             }
             RExp::InfixOpApply(prec, lhs, op) => {
-                let op = self.parse_tree.alloc_exp(Exp::Var(op));
-                let apply = self.parse_tree.alloc_exp(Exp::App(op, lhs));
-                let apply = self.parse_tree.alloc_exp(Exp::App(apply, exp));
-                self.state = S::InfixOp(prec, apply);
+                let app = match op {
+                    Op::Arr => {
+                        // lhs -> exp
+                        let arr = Arr { dom: lhs, rng: exp };
+                        self.parse_tree.alloc_exp(Exp::Arr(arr))
+                    }
+                    Op::Name(op) => {
+                        // ((op lhs) exp)
+                        let fun = self.parse_tree.alloc_exp(Exp::Var(op));
+                        let app = self.parse_tree.alloc_exp(Exp::App(fun, lhs));
+                        self.parse_tree.alloc_exp(Exp::App(app, exp))
+                    }
+                };
+                self.state = S::InfixOp(prec, app);
             }
             RExp::AppApply(head) => {
-                let apply = self.parse_tree.alloc_exp(Exp::App(head, exp));
-                self.state = S::AppArg(apply);
+                let app = self.parse_tree.alloc_exp(Exp::App(head, exp));
+                self.state = S::AppArg(app);
             }
         }
     }
