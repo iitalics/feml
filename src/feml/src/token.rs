@@ -56,7 +56,8 @@ pub enum Token<'a> {
     Cm = b',',
     Cl = b':',
     Eq = b'=',
-    Ar = b'>', // "=>"
+    Ar, // "->"
+    Rr, // "=>"
     Oper(&'a str),
     Ident(&'a str),
     Kw(Keyword),
@@ -75,7 +76,8 @@ impl Token<'_> {
             Token::Cm => Some(","),
             Token::Cl => Some(":"),
             Token::Eq => Some("="),
-            Token::Ar => Some("=>"),
+            Token::Ar => Some("->"),
+            Token::Rr => Some("=>"),
             Token::Oper { .. } => None,
             Token::Ident { .. } => None,
             Token::Kw(kw) => Some(kw.name()),
@@ -148,7 +150,8 @@ fn operator_to_token(op: &str) -> Token<'_> {
     match op {
         ":" => Token::Cl,
         "=" => Token::Eq,
-        "=>" => Token::Ar,
+        "->" => Token::Ar,
+        "=>" => Token::Rr,
         _ => Token::Oper(op),
     }
 }
@@ -321,7 +324,7 @@ let _ = sym refl;
         assert_eq!(next(), (1, 27, RP));
         assert_eq!(next(), (1, 29, Cl));
         assert_eq!(next(), (1, 31, Ident("A")));
-        assert_eq!(next(), (1, 33, Oper("->")));
+        assert_eq!(next(), (1, 33, Ar));
         assert_eq!(next(), (1, 36, Ident("type")));
         assert_eq!(next(), (1, 41, LC));
         assert_eq!(next(), (2, 2, Ident("refl")));
@@ -350,7 +353,7 @@ let _ = sym refl;
         assert_eq!(next(), (5, 38, Ident("p")));
         assert_eq!(next(), (5, 40, LC));
         assert_eq!(next(), (6, 2, Ident("relf")));
-        assert_eq!(next(), (6, 7, Ar));
+        assert_eq!(next(), (6, 7, Rr));
         assert_eq!(next(), (6, 10, Ident("refl")));
         assert_eq!(next(), (6, 14, Sm));
         assert_eq!(next(), (7, 0, RC));
