@@ -18,7 +18,7 @@ impl fmt::Display for Error {
 
 /// Indicates a position in the source text. All offets are stored 0-based, but line and
 /// column will be `Display`'d 1-based.
-#[derive(Eq, PartialEq, Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Debug, Copy, Clone, Default)]
 pub struct Loc {
     /// Offset from start of input.
     pub byte: usize,

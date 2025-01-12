@@ -2,18 +2,77 @@ use crate::intern::{Intern, Str};
 use crate::token::Loc;
 use std::fmt;
 
+/// The parse tree is the immediate result of parsing which has not had any type- or
+/// wellformedness-checks done yet.
 pub struct ParseTree<'s> {
     decl: Vec<Decl>,
     sig: Vec<Sig<'s>>,
     exp: Vec<Exp<'s>>,
 }
 
+impl<'s> ParseTree<'s> {
+    pub fn new() -> Self {
+        Self {
+            decl: Vec::with_capacity(256),
+            sig: Vec::with_capacity(256),
+            exp: Vec::with_capacity(4096),
+        }
+    }
+
+    pub fn alloc_decl(&mut self, decl: Decl) -> DeclHnd {
+        DeclHnd(extend(&mut self.decl, decl))
+    }
+
+    pub fn view_decl(&self, h: DeclHnd) -> &Decl {
+        &self.decl[h.0 as usize]
+    }
+
+    pub fn alloc_sig(&mut self, sig: Sig<'s>) -> SigHnd {
+        SigHnd(extend(&mut self.sig, sig))
+    }
+
+    pub fn view_sig(&self, h: SigHnd) -> &Sig<'s> {
+        &self.sig[h.0 as usize]
+    }
+
+    pub fn alloc_exp(&mut self, exp: Exp<'s>) -> ExpHnd {
+        ExpHnd(extend(&mut self.exp, exp))
+    }
+
+    pub fn view_exp(&self, h: ExpHnd) -> &Exp<'s> {
+        &self.exp[h.0 as usize]
+    }
+}
+
+// == Handles ==
+
 type Hnd = u32;
-pub type DeclHnd = Hnd;
-pub type SigHnd = Hnd;
-pub type ExpHnd = Hnd;
+
+/// Handle referencing a declaration.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct DeclHnd(Hnd);
+
+/// Handle referencing a signature.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SigHnd(Hnd);
+
+/// Handle referencing an expression.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ExpHnd(Hnd);
+
 pub type TyHnd = ExpHnd;
 
+// == Syntax tree ==
+
+/// Names of identifiers or operators.
+#[derive(Copy, Clone)]
+pub struct Name<'s> {
+    pub loc: Loc,
+    pub id: Str<'s>,
+    pub is_operator: bool,
+}
+
+/// Top-level declarations.
 #[derive(Clone)]
 pub enum Decl {
     Def {
@@ -28,6 +87,7 @@ pub enum Decl {
     },
 }
 
+/// Signatures for definitions.
 #[derive(Clone)]
 pub struct Sig<'s> {
     pub name: Name<'s>,
@@ -35,13 +95,7 @@ pub struct Sig<'s> {
     pub ret_ty: TyHnd,
 }
 
-#[derive(Copy, Clone)]
-pub struct Name<'s> {
-    pub loc: Loc,
-    pub id: Str<'s>,
-    pub is_oper: bool,
-}
-
+/// Parameters to definitions.
 #[derive(Copy, Clone)]
 pub struct Param<'s> {
     pub loc: Loc,
@@ -49,6 +103,7 @@ pub struct Param<'s> {
     pub ty: TyHnd,
 }
 
+/// Expressions.
 #[derive(Clone)]
 pub enum Exp<'s> {
     Var(Name<'s>),
@@ -56,12 +111,14 @@ pub enum Exp<'s> {
     Arr(Arr),
 }
 
+/// Arrow types.
 #[derive(Clone)]
 pub struct Arr {
     pub dom: ExpHnd,
     pub rng: ExpHnd,
 }
 
+/// Applications.
 #[derive(Clone)]
 pub struct App<'s> {
     pub head: Name<'s>,
@@ -74,45 +131,7 @@ fn extend<T>(nodes: &mut Vec<T>, item: T) -> Hnd {
     h
 }
 
-impl<'s> ParseTree<'s> {
-    pub fn new() -> Self {
-        Self {
-            decl: Vec::with_capacity(64),
-            sig: Vec::with_capacity(64),
-            exp: Vec::with_capacity(1024),
-        }
-    }
-
-    pub fn decls(&self) -> std::ops::Range<DeclHnd> {
-        0..(self.decl.len() as Hnd)
-    }
-
-    pub fn alloc_decl(&mut self, decl: Decl) -> DeclHnd {
-        extend(&mut self.decl, decl)
-    }
-
-    pub fn view_decl(&self, h: ExpHnd) -> &Decl {
-        &self.decl[h as usize]
-    }
-
-    pub fn alloc_sig(&mut self, sig: Sig<'s>) -> SigHnd {
-        extend(&mut self.sig, sig)
-    }
-
-    pub fn view_sig(&self, h: SigHnd) -> &Sig<'s> {
-        &self.sig[h as usize]
-    }
-
-    pub fn alloc_exp(&mut self, exp: Exp<'s>) -> ExpHnd {
-        extend(&mut self.exp, exp)
-    }
-
-    pub fn view_exp(&self, h: ExpHnd) -> &Exp<'s> {
-        &self.exp[h as usize]
-    }
-}
-
-// pretty printing
+// == Pretty printing ==
 
 pub struct DisplayDecl<'t, 's> {
     parse_tree: &'t ParseTree<'s>,
@@ -232,10 +251,77 @@ impl<'s> ParseTree<'s> {
     }
 
     fn fmt_name(&self, f: &mut fmt::Formatter<'_>, int: &Intern, name: &Name<'s>) -> fmt::Result {
-        if name.is_oper {
+        if name.is_operator {
             write!(f, "({})", int.get(name.id))
         } else {
             write!(f, "{}", int.get(name.id))
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_construct_and_pretty_print() {
+        let int = Intern::new();
+        let mut pt = ParseTree::new();
+
+        #[allow(non_snake_case)]
+        #[rustfmt::skip]
+        let decl = {
+            let loc = Loc::default();
+            let str_A = int.intern("A");
+            let str_eq = int.intern("==");
+            let str_refl = int.intern("refl");
+            let str_type = int.intern("type");
+            let str_x = int.intern("x");
+            let nm_A = Name { loc, id: str_A, is_operator: false };
+            let nm_eq = Name { loc, id: str_eq, is_operator: true };
+            let nm_refl = Name { loc, id: str_refl, is_operator: false };
+            let nm_type = Name { loc, id: str_type, is_operator: false };
+            let nm_x = Name { loc, id: str_x, is_operator: false };
+            let var_A = pt.alloc_exp(Exp::Var(nm_A));
+            let var_type = pt.alloc_exp(Exp::Var(nm_type));
+            let var_x = pt.alloc_exp(Exp::Var(nm_x));
+            // (A : type)
+            let param_A = Param { loc, id: str_A, ty: var_type };
+            // (x : A)
+            let param_x = Param { loc, id: str_x, ty: var_A };
+            // A -> type
+            let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arr {
+                dom: var_A,
+                rng: var_type,
+            }));
+            // (==) A x x
+            let exp_x_eq_x = pt.alloc_exp(Exp::App(App {
+                head: nm_eq,
+                args: vec![var_A, var_x, var_x],
+            }));
+            // (==) (A : type) (x : A) : A -> type
+            let sig_eq = pt.alloc_sig(Sig {
+                name: nm_eq,
+                params: vec![param_A, param_x],
+                ret_ty: exp_arr_A_type,
+            });
+            // refl : (==) A x x
+            let sig_refl = pt.alloc_sig(Sig {
+                name: nm_refl,
+                params: vec![],
+                ret_ty: exp_x_eq_x,
+            });
+            // data (==) {...}
+            pt.alloc_decl(Decl::Data {
+                loc,
+                sig: sig_eq,
+                ctors: vec![sig_refl],
+            })
+        };
+
+        assert_eq!(
+            pt.display_decl(&int, decl).to_string(),
+            "data (==) (A : type) (x : A) : A -> type { refl : (==) A x x; };",
+        );
     }
 }

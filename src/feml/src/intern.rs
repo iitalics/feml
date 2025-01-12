@@ -46,7 +46,7 @@ impl Intern {
 
 /// References a string that has been interned. This handle does not allow you to get the
 /// string contents directly; for that you must use [`Intern::get`]. However you can
-/// compare `Ref`'s for equality cheaply which only compares an underlying `u32`.
+/// compare `Str`'s for equality cheaply which only compares an underlying `u32`.
 #[derive(Copy, Clone)]
 pub struct Str<'a> {
     _intern: std::marker::PhantomData<&'a Intern>,
