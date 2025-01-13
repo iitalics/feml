@@ -8,6 +8,7 @@ pub struct ParseTree<'s> {
     decl: Vec<Decl>,
     sig: Vec<Sig<'s>>,
     exp: Vec<Exp<'s>>,
+    pat: Vec<Pat<'s>>,
 }
 
 impl<'s> ParseTree<'s> {
@@ -16,6 +17,7 @@ impl<'s> ParseTree<'s> {
             decl: Vec::with_capacity(256),
             sig: Vec::with_capacity(256),
             exp: Vec::with_capacity(4096),
+            pat: Vec::with_capacity(1024),
         }
     }
 
@@ -46,6 +48,14 @@ impl<'s> ParseTree<'s> {
     pub fn view_exp(&self, h: ExpHnd) -> &Exp<'s> {
         &self.exp[h.0 as usize]
     }
+
+    pub fn alloc_pat(&mut self, pat: Pat<'s>) -> PatHnd {
+        PatHnd(extend(&mut self.pat, pat))
+    }
+
+    pub fn view_pat(&self, h: PatHnd) -> &Pat<'s> {
+        &self.pat[h.0 as usize]
+    }
 }
 
 // == Handles ==
@@ -63,6 +73,10 @@ pub struct SigHnd(Hnd);
 /// Handle referencing an expression.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ExpHnd(Hnd);
+
+/// Handle referencing a pattern.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PatHnd(Hnd);
 
 pub type TyHnd = ExpHnd;
 
@@ -136,6 +150,8 @@ pub enum Exp<'s> {
     Arr(Arrow<'s>),
     // fn x => e
     Lam(Lambda<'s>),
+    // match v { p => e; }
+    Mat(Match),
 }
 
 // TODO: named/explicit args
@@ -152,9 +168,28 @@ pub struct Arrow<'s> {
 /// Lambda expressions.
 #[derive(Clone)]
 pub struct Lambda<'s> {
+    //pub loc_fn: Loc,
     pub arg_name: Name<'s>,
     pub arg_ty: Option<TyHnd>,
     pub body: ExpHnd,
+}
+
+/// Match expressions.
+#[derive(Clone)]
+pub struct Match {
+    pub subject: ExpHnd,
+    pub cases: Vec<(PatHnd, ExpHnd)>,
+}
+
+/// Pattenrs.
+#[derive(Clone)]
+pub enum Pat<'s> {
+    // _
+    Any(Loc),
+    // x
+    Var(Name<'s>),
+    // C p1 p2 ...
+    App(Name<'s>, Vec<PatHnd>),
 }
 
 impl<'s> Arrow<'s> {
@@ -207,6 +242,18 @@ impl fmt::Display for DisplayExp<'_, '_> {
     }
 }
 
+pub struct DisplayPat<'t, 's> {
+    parse_tree: &'t ParseTree<'s>,
+    intern: &'s Intern,
+    pat: PatHnd,
+}
+
+impl fmt::Display for DisplayPat<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.parse_tree.fmt_pat(f, self.intern, self.pat, 0)
+    }
+}
+
 impl<'s> ParseTree<'s> {
     pub fn display_decl<'t>(&'t self, intern: &'s Intern, decl: DeclHnd) -> DisplayDecl<'t, 's> {
         DisplayDecl {
@@ -221,6 +268,14 @@ impl<'s> ParseTree<'s> {
             parse_tree: self,
             intern,
             exp,
+        }
+    }
+
+    pub fn display_pat<'t>(&'t self, intern: &'s Intern, pat: PatHnd) -> DisplayPat<'t, 's> {
+        DisplayPat {
+            parse_tree: self,
+            intern,
+            pat,
         }
     }
 
@@ -334,6 +389,53 @@ impl<'s> ParseTree<'s> {
                 }
                 Ok(())
             }
+            Exp::Mat(Match { subject, cases }) => {
+                if prec > 0 {
+                    write!(f, "(")?;
+                }
+                write!(f, "match ")?;
+                self.fmt_exp(f, int, *subject, 2)?;
+                write!(f, " {{")?;
+                for (lhs, rhs) in cases.iter() {
+                    write!(f, " ")?;
+                    self.fmt_pat(f, int, *lhs, 0)?;
+                    write!(f, " => ")?;
+                    self.fmt_exp(f, int, *rhs, 0)?;
+                    write!(f, ";")?;
+                }
+                write!(f, " }}")?;
+                if prec > 0 {
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn fmt_pat(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        int: &Intern,
+        pat: PatHnd,
+        prec: u32,
+    ) -> fmt::Result {
+        match self.view_pat(pat) {
+            Pat::Any(_) => write!(f, "_"),
+            Pat::Var(name) => self.fmt_name(f, int, name),
+            Pat::App(head, args) => {
+                if prec > 0 {
+                    write!(f, "(")?;
+                }
+                self.fmt_name(f, int, head)?;
+                for arg in args {
+                    write!(f, " ")?;
+                    self.fmt_pat(f, int, *arg, 1)?;
+                }
+                if prec > 0 {
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -360,6 +462,8 @@ mod test {
         let str_A = int.intern("A");
         let str_B = int.intern("B");
         let str_C = int.intern("C");
+        let str_S = int.intern("S");
+        let str_Z = int.intern("Z");
         let str_eq = int.intern("==");
         let str_nat = int.intern("nat");
         let str_refl = int.intern("refl");
@@ -369,6 +473,8 @@ mod test {
         let nm_A = Name::ident(loc, str_A);
         let nm_B = Name::ident(loc, str_B);
         let nm_C = Name::ident(loc, str_C);
+        let nm_S = Name::ident(loc, str_S);
+        let nm_Z = Name::ident(loc, str_Z);
         let nm_eq = Name::operator(loc, str_eq);
         let nm_nat = Name::ident(loc, str_nat);
         let nm_refl = Name::ident(loc, str_refl);
@@ -378,6 +484,8 @@ mod test {
         let var_A = pt.alloc_exp(Exp::Var(nm_A));
         let var_B = pt.alloc_exp(Exp::Var(nm_B));
         let var_C = pt.alloc_exp(Exp::Var(nm_C));
+        let var_S = pt.alloc_exp(Exp::Var(nm_S));
+        let var_Z = pt.alloc_exp(Exp::Var(nm_Z));
         let var_eq = pt.alloc_exp(Exp::Var(nm_eq));
         let var_nat = pt.alloc_exp(Exp::Var(nm_nat));
         let var_type = pt.alloc_exp(Exp::Var(nm_type));
@@ -450,5 +558,22 @@ mod test {
         };
 
         assert_eq!(pt.display_exp(&int, ty).to_string(), "A -> (x : B) -> C");
+
+        let exp = {
+            let exp_S_y = pt.alloc_exp(Exp::App(var_S, var_y));
+            let exp_S_S_y = pt.alloc_exp(Exp::App(var_S, exp_S_y));
+            let pat_Z = pt.alloc_pat(Pat::Var(nm_Z));
+            let pat_y = pt.alloc_pat(Pat::Var(nm_y));
+            let pat_S_y = pt.alloc_pat(Pat::App(nm_S, vec![pat_y]));
+            pt.alloc_exp(Exp::Mat(Match {
+                subject: var_x,
+                cases: vec![(pat_Z, var_Z), (pat_S_y, exp_S_S_y)],
+            }))
+        };
+
+        assert_eq!(
+            pt.display_exp(&int, exp).to_string(),
+            "match x { Z => Z; S y => S (S y); }"
+        );
     }
 }
