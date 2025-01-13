@@ -178,8 +178,10 @@ pub struct Lambda<'s> {
 #[derive(Clone)]
 pub struct Match {
     pub subject: ExpHnd,
-    pub cases: Vec<(PatHnd, ExpHnd)>,
+    pub cases: Vec<MatchCase>,
 }
+
+pub type MatchCase = (PatHnd, ExpHnd);
 
 /// Pattenrs.
 #[derive(Clone)]
@@ -188,9 +190,11 @@ pub enum Pat<'s> {
     Any(Loc),
     // x
     Var(Name<'s>),
-    // C p1 p2 ...
-    App(Name<'s>, Vec<PatHnd>),
+    // f a
+    App(PatHnd, PatArg),
 }
+
+type PatArg = PatHnd;
 
 impl<'s> Arrow<'s> {
     pub fn unnamed(dom: ExpHnd, rng: ExpHnd) -> Self {
@@ -422,15 +426,13 @@ impl<'s> ParseTree<'s> {
         match self.view_pat(pat) {
             Pat::Any(_) => write!(f, "_"),
             Pat::Var(name) => self.fmt_name(f, int, name),
-            Pat::App(head, args) => {
+            Pat::App(head, arg) => {
                 if prec > 0 {
                     write!(f, "(")?;
                 }
-                self.fmt_name(f, int, head)?;
-                for arg in args {
-                    write!(f, " ")?;
-                    self.fmt_pat(f, int, *arg, 1)?;
-                }
+                self.fmt_pat(f, int, *head, 0)?;
+                write!(f, " ")?;
+                self.fmt_pat(f, int, *arg, 1)?;
                 if prec > 0 {
                     write!(f, ")")?;
                 }
@@ -563,8 +565,9 @@ mod test {
             let exp_S_y = pt.alloc_exp(Exp::App(var_S, var_y));
             let exp_S_S_y = pt.alloc_exp(Exp::App(var_S, exp_S_y));
             let pat_Z = pt.alloc_pat(Pat::Var(nm_Z));
+            let pat_S = pt.alloc_pat(Pat::Var(nm_S));
             let pat_y = pt.alloc_pat(Pat::Var(nm_y));
-            let pat_S_y = pt.alloc_pat(Pat::App(nm_S, vec![pat_y]));
+            let pat_S_y = pt.alloc_pat(Pat::App(pat_S, pat_y));
             pt.alloc_exp(Exp::Mat(Match {
                 subject: var_x,
                 cases: vec![(pat_Z, var_Z), (pat_S_y, exp_S_S_y)],
