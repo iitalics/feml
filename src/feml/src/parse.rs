@@ -464,6 +464,10 @@ impl<'i> Parser<'i> {
                     _ => return Err(expected(loc, "'->' after named function parameter", t)),
                 },
 
+                // <lambda> ::=
+                //   "fn" <lparam> "=>" <exp>
+                // <lparam> ::=
+                //   <id> | <param>
                 S::Lam => match t {
                     Token::Kw(Keyword::Fn) => {
                         self.state = S::LamParam;
