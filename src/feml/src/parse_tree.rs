@@ -134,6 +134,8 @@ pub enum Exp<'s> {
     App(ExpHnd, Arg),
     // d -> r
     Arr(Arrow<'s>),
+    // fn x => e
+    Lam(Lambda<'s>),
 }
 
 // TODO: named/explicit args
@@ -143,8 +145,16 @@ type Arg = ExpHnd;
 #[derive(Clone)]
 pub struct Arrow<'s> {
     pub dom_name: Option<Name<'s>>,
-    pub dom: ExpHnd,
-    pub rng: ExpHnd,
+    pub dom: TyHnd,
+    pub rng: TyHnd,
+}
+
+/// Lambda expressions.
+#[derive(Clone)]
+pub struct Lambda<'s> {
+    pub arg_name: Name<'s>,
+    pub arg_ty: Option<TyHnd>,
+    pub body: ExpHnd,
 }
 
 impl<'s> Arrow<'s> {
@@ -262,7 +272,7 @@ impl<'s> ParseTree<'s> {
         match self.view_exp(exp) {
             Exp::Var(name) => self.fmt_name(f, int, name),
             Exp::Arr(Arrow { dom_name, dom, rng }) => {
-                if prec > 0 {
+                if prec > 1 {
                     write!(f, "(")?;
                 }
                 match dom_name {
@@ -274,24 +284,52 @@ impl<'s> ParseTree<'s> {
                         write!(f, ")")?;
                     }
                     None => {
-                        self.fmt_exp(f, int, *dom, 1)?;
+                        self.fmt_exp(f, int, *dom, 2)?;
                     }
                 }
                 write!(f, " -> ")?;
-                self.fmt_exp(f, int, *rng, 0)?;
-                if prec > 0 {
+                self.fmt_exp(f, int, *rng, 1)?;
+                if prec > 1 {
                     write!(f, ")")?;
                 }
                 Ok(())
             }
             Exp::App(fun, arg) => {
-                if prec > 1 {
+                if prec > 2 {
                     write!(f, "(")?;
                 }
-                self.fmt_exp(f, int, *fun, 1)?;
+                self.fmt_exp(f, int, *fun, 2)?;
                 write!(f, " ")?;
-                self.fmt_exp(f, int, *arg, 2)?;
-                if prec > 1 {
+                self.fmt_exp(f, int, *arg, 3)?;
+                if prec > 2 {
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            Exp::Lam(Lambda {
+                arg_name,
+                arg_ty,
+                body,
+            }) => {
+                if prec > 0 {
+                    write!(f, "(")?;
+                }
+                write!(f, "fn ")?;
+                match arg_ty {
+                    Some(arg_ty) => {
+                        write!(f, "(")?;
+                        self.fmt_name(f, int, arg_name)?;
+                        write!(f, " : ")?;
+                        self.fmt_exp(f, int, *arg_ty, 0)?;
+                        write!(f, ")")?;
+                    }
+                    None => {
+                        self.fmt_name(f, int, arg_name)?;
+                    }
+                }
+                write!(f, " => ")?;
+                self.fmt_exp(f, int, *body, 0)?;
+                if prec > 0 {
                     write!(f, ")")?;
                 }
                 Ok(())
@@ -313,28 +351,41 @@ mod test {
     use super::*;
 
     #[test]
+    #[allow(non_snake_case)]
     fn test_construct_and_pretty_print() {
         let int = Intern::new();
         let mut pt = ParseTree::new();
 
-        #[allow(non_snake_case)]
+        let loc = Loc::default();
+        let str_A = int.intern("A");
+        let str_B = int.intern("B");
+        let str_C = int.intern("C");
+        let str_eq = int.intern("==");
+        let str_nat = int.intern("nat");
+        let str_refl = int.intern("refl");
+        let str_type = int.intern("type");
+        let str_x = int.intern("x");
+        let str_y = int.intern("y");
+        let nm_A = Name::ident(loc, str_A);
+        let nm_B = Name::ident(loc, str_B);
+        let nm_C = Name::ident(loc, str_C);
+        let nm_eq = Name::operator(loc, str_eq);
+        let nm_nat = Name::ident(loc, str_nat);
+        let nm_refl = Name::ident(loc, str_refl);
+        let nm_type = Name::ident(loc, str_type);
+        let nm_x = Name::ident(loc, str_x);
+        let nm_y = Name::ident(loc, str_y);
+        let var_A = pt.alloc_exp(Exp::Var(nm_A));
+        let var_B = pt.alloc_exp(Exp::Var(nm_B));
+        let var_C = pt.alloc_exp(Exp::Var(nm_C));
+        let var_eq = pt.alloc_exp(Exp::Var(nm_eq));
+        let var_nat = pt.alloc_exp(Exp::Var(nm_nat));
+        let var_type = pt.alloc_exp(Exp::Var(nm_type));
+        let var_x = pt.alloc_exp(Exp::Var(nm_x));
+        let var_y = pt.alloc_exp(Exp::Var(nm_y));
+
         #[rustfmt::skip]
         let decl = {
-            let loc = Loc::default();
-            let str_A = int.intern("A");
-            let str_eq = int.intern("==");
-            let str_refl = int.intern("refl");
-            let str_type = int.intern("type");
-            let str_x = int.intern("x");
-            let nm_A = Name::ident(loc, str_A);
-            let nm_eq = Name::operator(loc, str_eq);
-            let nm_refl = Name::ident(loc, str_refl);
-            let nm_type = Name::ident(loc, str_type);
-            let nm_x = Name::ident(loc, str_x);
-            let var_A = pt.alloc_exp(Exp::Var(nm_A));
-            let var_eq = pt.alloc_exp(Exp::Var(nm_eq));
-            let var_type = pt.alloc_exp(Exp::Var(nm_type));
-            let var_x = pt.alloc_exp(Exp::Var(nm_x));
             // (A : type)
             let param_A = Param { name: nm_A, ty: var_type };
             // (x : A)
@@ -371,34 +422,28 @@ mod test {
         );
 
         let exp = {
-            let loc = Loc::default();
-            let str_x = int.intern("x");
-            let str_y = int.intern("y");
-            let nm_x = Name::ident(loc, str_x);
-            let nm_y = Name::ident(loc, str_y);
-            let var_x = pt.alloc_exp(Exp::Var(nm_x));
-            let var_y = pt.alloc_exp(Exp::Var(nm_y));
             let exp_x_x = pt.alloc_exp(Exp::App(var_x, var_x));
             let exp_y_y = pt.alloc_exp(Exp::App(var_y, var_y));
-            pt.alloc_exp(Exp::App(exp_x_x, exp_y_y))
+            let exp_app = pt.alloc_exp(Exp::App(exp_x_x, exp_y_y));
+            let exp_fn_y = pt.alloc_exp(Exp::Lam(Lambda {
+                arg_name: nm_y,
+                arg_ty: None,
+                body: exp_app,
+            }));
+            let exp_fn_x = pt.alloc_exp(Exp::Lam(Lambda {
+                arg_name: nm_x,
+                arg_ty: Some(var_nat),
+                body: exp_fn_y,
+            }));
+            exp_fn_x
         };
 
-        assert_eq!(pt.display_exp(&int, exp).to_string(), "x x (y y)");
+        assert_eq!(
+            pt.display_exp(&int, exp).to_string(),
+            "fn (x : nat) => fn y => x x (y y)"
+        );
 
-        #[allow(non_snake_case)]
         let ty = {
-            let loc = Loc::default();
-            let str_A = int.intern("A");
-            let str_B = int.intern("B");
-            let str_C = int.intern("C");
-            let str_x = int.intern("x");
-            let nm_A = Name::ident(loc, str_A);
-            let nm_B = Name::ident(loc, str_B);
-            let nm_C = Name::ident(loc, str_C);
-            let nm_x = Name::ident(loc, str_x);
-            let var_A = pt.alloc_exp(Exp::Var(nm_A));
-            let var_B = pt.alloc_exp(Exp::Var(nm_B));
-            let var_C = pt.alloc_exp(Exp::Var(nm_C));
             let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(nm_x, var_B, var_C)));
             let arr_A_B_C = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
             arr_A_B_C
