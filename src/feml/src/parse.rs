@@ -2,7 +2,7 @@ use std::fmt;
 use std::mem;
 
 use crate::intern::Intern;
-use crate::parse_tree::{Arrow, Decl, Exp, Name, Param, ParseTree, Sig};
+use crate::parse_tree::{Arrow, Decl, Exp, Lambda, Name, Param, ParseTree, Sig};
 use crate::parse_tree::{ExpHnd, SigHnd, TyHnd};
 use crate::token::{Keyword, Loc, Token};
 
@@ -121,12 +121,16 @@ enum S<'i> {
     InfixMaybeParamId(Prec, Loc),
     InfixMaybeParamCl(Prec, Name<'i>),
     InfixArrowAr(Prec, Param<'i>),
+    Lam,
+    LamParam,
+    LamAr(Name<'i>, Option<TyHnd>),
 }
 
 // parser reduction for Name type
 enum RName {
     SigParams,
     ExpVar,
+    LamAr,
 }
 
 // parser reduction for Sig type
@@ -138,6 +142,7 @@ enum RSig {
 enum RParam<'i> {
     SigParam(Name<'i>, Vec<Param<'i>>),
     InfixArrowAr(Prec),
+    LamAr,
 }
 
 // parser reduction for Exp type
@@ -151,6 +156,7 @@ enum RExp<'i> {
     AppApply(ExpHnd),
     TermRP,
     InfixArrowApply(Prec, Param<'i>),
+    Lam(Name<'i>, Option<TyHnd>),
 }
 
 impl<'i> Parser<'i> {
@@ -294,15 +300,18 @@ impl<'i> Parser<'i> {
                 },
 
                 // <exp> ::=
-                //   "fn" <...>
-                //   "match" <...>
                 //   <infix>
-                S::Exp => {
-                    // TODO: Keyword::Fn
-                    // TODO: Keyword::Match
-                    self.state = S::Infix(Prec::arrow());
-                    continue;
-                }
+                //   <lambda>
+                S::Exp => match t {
+                    Token::Kw(Keyword::Fn) => {
+                        self.state = S::Lam;
+                        continue;
+                    }
+                    _ => {
+                        self.state = S::Infix(Prec::arrow());
+                        continue;
+                    }
+                },
 
                 // <infix> ::=
                 //   <app> {<oper> <app>}
@@ -454,6 +463,35 @@ impl<'i> Parser<'i> {
                     }
                     _ => return Err(expected(loc, "'->' after named function parameter", t)),
                 },
+
+                S::Lam => match t {
+                    Token::Kw(Keyword::Fn) => {
+                        self.state = S::LamParam;
+                        break;
+                    }
+                    _ => return Err(expected(loc, "'fn'", t)),
+                },
+                S::LamParam => match t {
+                    Token::Ident(_) => {
+                        self.reduce_name.push(RName::LamAr);
+                        self.state = S::Name;
+                        continue;
+                    }
+                    Token::LP => {
+                        self.reduce_param.push(RParam::LamAr);
+                        self.state = S::Param;
+                        continue;
+                    }
+                    _ => return Err(expected(loc, "name or '(name : ty)'", t)),
+                },
+                S::LamAr(arg_name, arg_ty) => match t {
+                    Token::Rr => {
+                        self.reduce_exp.push(RExp::Lam(arg_name, arg_ty));
+                        self.state = S::Exp;
+                        break;
+                    }
+                    _ => return Err(expected(loc, "'=>' after lambda parameter", t)),
+                },
             }
         }
         Ok(())
@@ -470,6 +508,7 @@ impl<'i> Parser<'i> {
     fn reduce_name(&mut self, name: Name<'i>) {
         match self.reduce_name.pop().unwrap() {
             RName::SigParams => self.state = S::SigParams(name, vec![]),
+            RName::LamAr => self.state = S::LamAr(name, None),
             RName::ExpVar => {
                 let var = self.parse_tree.alloc_exp(Exp::Var(name));
                 self.reduce_exp(var);
@@ -524,6 +563,16 @@ impl<'i> Parser<'i> {
                 let arr = self.parse_tree.alloc_exp(Exp::Arr(arrow));
                 self.state = S::InfixOp(prec, arr);
             }
+            RExp::Lam(arg_name, arg_ty) => {
+                let lambda = Lambda {
+                    arg_name,
+                    arg_ty,
+                    body: exp,
+                };
+                let lam = self.parse_tree.alloc_exp(Exp::Lam(lambda));
+                // TODO: turn tail call into loop
+                self.reduce_exp(lam);
+            }
         }
     }
 
@@ -533,6 +582,9 @@ impl<'i> Parser<'i> {
             RParam::SigParam(name, mut params) => {
                 params.push(param);
                 self.state = S::SigParams(name, params);
+            }
+            RParam::LamAr => {
+                self.state = S::LamAr(param.name, Some(param.ty));
             }
         }
     }
@@ -551,12 +603,10 @@ def f : (Q : A -> type) -> (x : A)
      -> P x == Q x
 =
   x + (y + w) * z;
-";
 
-        // named infix operators get made into prefix operators with the appropriate order
-        // of operations
-        static OUTPUT: &str = "
-def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) ((+) y w) z);
+def const (A : type) (B : type)
+: A -> B -> A
+= fn x => fn (y : B) => x;
 ";
 
         let int = Intern::new();
@@ -567,7 +617,20 @@ def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) 
             prs.feed(loc, t).unwrap();
         }
         let tree = prs.end_of_file(tkz.loc()).unwrap();
-        let decl = tree.decls()[0];
-        assert_eq!(tree.display_decl(&int, decl).to_string(), OUTPUT.trim());
+        let decls = tree.decls();
+        assert_eq!(
+            tree.display_decl(&int, decls[0]).to_string(),
+            "
+def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) ((+) y w) z);
+"
+            .trim()
+        );
+        assert_eq!(
+            tree.display_decl(&int, decls[1]).to_string(),
+            "
+def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
+"
+            .trim()
+        );
     }
 }

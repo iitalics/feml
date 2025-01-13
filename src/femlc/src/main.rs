@@ -4,7 +4,9 @@ use feml::token::Tokenizer;
 use std::process::ExitCode;
 
 static INPUT: &str = "
-def f : (Q : A -> type) -> (x : A) -> P == Q -> P x == Q x = x + (y + w) * z;
+def f (Q : A -> type) : (x : A) -> P == Q -> P x == Q x =
+  fn x => fn (p_eq_q : P == Q) =>
+    refl;
 ";
 
 fn main() -> ExitCode {
