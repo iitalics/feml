@@ -95,6 +95,8 @@ pub struct Parser<'i> {
     reduce_param: Vec<RParam<'i>>,
     reduce_pat: Vec<RPat>,
     reduce_match_case: Vec<RMatchCase>,
+    param_list_stack: Vec<Vec<Param<'i>>>,
+    match_case_stack: Vec<Vec<MatchCase>>,
 }
 
 // parser state
@@ -108,7 +110,7 @@ enum S<'i> {
     NameOp(Loc),
     NameOpRP(Name<'i>),
     Sig,
-    SigParams(Name<'i>, Vec<Param<'i>>),
+    SigParams(Name<'i>),
     Param,
     ParamName,
     ParamCl(Name<'i>),
@@ -129,7 +131,7 @@ enum S<'i> {
     LamAr(Name<'i>, Option<TyHnd>),
     Match,
     MatchLC(ExpHnd),
-    MatchCases(ExpHnd, Vec<MatchCase>),
+    MatchCases(ExpHnd),
     CaseRr(PatHnd),
     CaseSm(PatHnd, ExpHnd),
     Pat,
@@ -154,7 +156,7 @@ enum RSig {
 
 // parser reduction for Param type
 enum RParam<'i> {
-    SigParam(Name<'i>, Vec<Param<'i>>),
+    SigParam(Name<'i>),
     InfixArrowAr(Prec),
     LamAr,
 }
@@ -162,7 +164,7 @@ enum RParam<'i> {
 // parser reduction for Exp type
 enum RExp<'i> {
     DefSm(Loc, SigHnd),
-    Sig(Name<'i>, Vec<Param<'i>>),
+    Sig(Name<'i>),
     ParamRP(Name<'i>),
     InfixOp(Prec),
     InfixOpApply(Prec, ExpHnd, Op<'i>),
@@ -183,7 +185,7 @@ enum RPat {
 }
 
 enum RMatchCase {
-    MatchCases(ExpHnd, Vec<MatchCase>),
+    MatchCases(ExpHnd),
 }
 
 impl<'i> Parser<'i> {
@@ -198,6 +200,8 @@ impl<'i> Parser<'i> {
             reduce_param: vec![],
             reduce_pat: vec![],
             reduce_match_case: vec![],
+            param_list_stack: vec![],
+            match_case_stack: vec![],
         }
     }
 
@@ -275,18 +279,19 @@ impl<'i> Parser<'i> {
 
                 // <sig> ::= <name> {<param>} ":" <ty>
                 S::Sig => {
+                    self.param_list_stack.push(vec![]);
                     self.reduce_name.push(RName::SigParams);
                     self.state = S::Name;
                     continue;
                 }
-                S::SigParams(name, params) => match t {
+                S::SigParams(name) => match t {
                     Token::LP => {
-                        self.reduce_param.push(RParam::SigParam(name, params));
+                        self.reduce_param.push(RParam::SigParam(name));
                         self.state = S::Param;
                         continue;
                     }
                     Token::Cl => {
-                        self.reduce_exp.push(RExp::Sig(name, params));
+                        self.reduce_exp.push(RExp::Sig(name));
                         self.state = S::Exp;
                         break;
                     }
@@ -545,21 +550,22 @@ impl<'i> Parser<'i> {
                 },
                 S::MatchLC(subject) => match t {
                     Token::LC => {
-                        self.state = S::MatchCases(subject, vec![]);
+                        self.match_case_stack.push(vec![]);
+                        self.state = S::MatchCases(subject);
                         break;
                     }
                     _ => return Err(expected(loc, "'{' after expression", t)),
                 },
-                S::MatchCases(subject, cases) => match t {
+                S::MatchCases(subject) => match t {
                     Token::RC => {
+                        let cases = self.match_case_stack.pop().unwrap();
                         let mtch = Match { subject, cases };
                         let mat = self.parse_tree.alloc_exp(Exp::Mat(mtch));
                         self.reduce_exp(mat);
                         break;
                     }
                     _ => {
-                        self.reduce_match_case
-                            .push(RMatchCase::MatchCases(subject, cases));
+                        self.reduce_match_case.push(RMatchCase::MatchCases(subject));
                         self.reduce_pat.push(RPat::CaseRr);
                         self.state = S::Pat;
                         continue;
@@ -654,7 +660,7 @@ impl<'i> Parser<'i> {
 
     fn reduce_name(&mut self, name: Name<'i>) {
         match self.reduce_name.pop().unwrap() {
-            RName::SigParams => self.state = S::SigParams(name, vec![]),
+            RName::SigParams => self.state = S::SigParams(name),
             RName::LamAr => self.state = S::LamAr(name, None),
             RName::ExpVar => {
                 let var = self.parse_tree.alloc_exp(Exp::Var(name));
@@ -682,7 +688,8 @@ impl<'i> Parser<'i> {
             RExp::TermRP => self.state = S::TermRP(exp),
             RExp::MatchLC => self.state = S::MatchLC(exp),
             RExp::CaseSm(pat) => self.state = S::CaseSm(pat, exp),
-            RExp::Sig(name, params) => {
+            RExp::Sig(name) => {
+                let params = self.param_list_stack.pop().unwrap();
                 let sig = self.parse_tree.alloc_sig(Sig {
                     name,
                     params,
@@ -732,12 +739,11 @@ impl<'i> Parser<'i> {
     fn reduce_param(&mut self, param: Param<'i>) {
         match self.reduce_param.pop().unwrap() {
             RParam::InfixArrowAr(prec) => self.state = S::InfixArrowAr(prec, param),
-            RParam::SigParam(name, mut params) => {
+            RParam::LamAr => self.state = S::LamAr(param.name, Some(param.ty)),
+            RParam::SigParam(name) => {
+                let params = self.param_list_stack.last_mut().unwrap();
                 params.push(param);
-                self.state = S::SigParams(name, params);
-            }
-            RParam::LamAr => {
-                self.state = S::LamAr(param.name, Some(param.ty));
+                self.state = S::SigParams(name);
             }
         }
     }
@@ -756,9 +762,10 @@ impl<'i> Parser<'i> {
 
     fn reduce_match_case(&mut self, case: MatchCase) {
         match self.reduce_match_case.pop().unwrap() {
-            RMatchCase::MatchCases(subject, mut cases) => {
+            RMatchCase::MatchCases(subject) => {
+                let cases = self.match_case_stack.last_mut().unwrap();
                 cases.push(case);
-                self.state = S::MatchCases(subject, cases);
+                self.state = S::MatchCases(subject);
             }
         }
     }
@@ -768,6 +775,17 @@ impl<'i> Parser<'i> {
 mod test {
     use super::*;
     use crate::token::Tokenizer;
+
+    #[test]
+    fn test_needs_drop() {
+        assert!(!std::mem::needs_drop::<S<'_>>());
+        assert!(!std::mem::needs_drop::<RName>());
+        assert!(!std::mem::needs_drop::<RSig>());
+        assert!(!std::mem::needs_drop::<RExp<'_>>());
+        assert!(!std::mem::needs_drop::<RParam<'_>>());
+        assert!(!std::mem::needs_drop::<RPat>());
+        assert!(!std::mem::needs_drop::<RMatchCase>());
+    }
 
     #[test]
     fn test_parse_print() {
