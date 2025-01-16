@@ -1,3 +1,4 @@
+use feml::elaborate::Context;
 use feml::intern::Intern;
 use feml::parse::Parser;
 use feml::parse_tree::{Decl, ParseTree};
@@ -28,7 +29,7 @@ fn main() -> ExitCode {
     let tree = match parse(
         &int,
         "
-assert S (S (S Z)) : nat;
+assert (fn x => S x (fn y => x) x) : A -> A -> A;
 ",
     ) {
         Ok(t) => t,
@@ -40,7 +41,16 @@ assert S (S (S Z)) : nat;
 
     for decl in tree.decls() {
         if let Decl::Assert { exp, .. } = tree.view_decl(decl) {
-            println!("{}", tree.display_exp(&int, *exp));
+            let mut ctx = Context::new(&int, &tree);
+            match ctx.elab_exp(*exp) {
+                Ok(stx) => {
+                    println!("{}", tree.display_exp(&int, *exp));
+                    println!("--> {:?}", stx);
+                }
+                Err(feml::elaborate::Error::NotDefined(loc, x)) => {
+                    println!("error: input:{loc}: {} not defined", int.get(x));
+                }
+            }
         }
     }
 
