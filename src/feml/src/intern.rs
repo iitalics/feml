@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 
 /// Collection of interned strings. This enables storing many copies of the same string
 /// using the same memory, and allows for extremely cheap comparison of strings.
@@ -65,6 +66,12 @@ impl<'a> Str<'a> {
 impl PartialEq for Str<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.handle == other.handle
+    }
+}
+
+impl fmt::Debug for Str<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Str").finish_non_exhaustive()
     }
 }
 
