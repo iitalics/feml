@@ -43,17 +43,6 @@ impl fmt::Display for Error {
     }
 }
 
-pub struct Parser<'i> {
-    intern: &'i Intern,
-    parse_tree: ParseTree<'i>,
-    state: S<'i>,
-    reduce_name: Vec<RName>,
-    reduce_sig: Vec<RSig>,
-    reduce_exp: Vec<RExp<'i>>,
-    reduce_param: Vec<RParam<'i>>,
-    reduce_match_case: Vec<RMatchCase>,
-}
-
 // infix operator precedence
 #[derive(Copy, Clone)]
 enum Prec {
@@ -96,6 +85,18 @@ enum Op<'i> {
     Name(Name<'i>),
 }
 
+pub struct Parser<'i> {
+    intern: &'i Intern,
+    parse_tree: ParseTree<'i>,
+    state: S<'i>,
+    reduce_name: Vec<RName>,
+    reduce_sig: Vec<RSig>,
+    reduce_exp: Vec<RExp<'i>>,
+    reduce_param: Vec<RParam<'i>>,
+    reduce_pat: Vec<RPat>,
+    reduce_match_case: Vec<RMatchCase>,
+}
+
 // parser state
 enum S<'i> {
     Error,
@@ -132,6 +133,10 @@ enum S<'i> {
     CaseRr(PatHnd),
     CaseSm(PatHnd, ExpHnd),
     Pat,
+    PatAppArg(PatHnd),
+    PatTerm,
+    PatTermLP(Loc),
+    PatTermRP(PatHnd),
 }
 
 // parser reduction for Name type
@@ -139,6 +144,7 @@ enum RName {
     SigParams,
     ExpVar,
     LamAr,
+    PatVar,
 }
 
 // parser reduction for Sig type
@@ -169,9 +175,12 @@ enum RExp<'i> {
     CaseSm(PatHnd),
 }
 
-// enum RPat {
-//     CaseRr,
-// }
+enum RPat {
+    CaseRr,
+    PatAppArg,
+    PatAppApply(PatHnd),
+    PatTermRP,
+}
 
 enum RMatchCase {
     MatchCases(ExpHnd, Vec<MatchCase>),
@@ -187,6 +196,7 @@ impl<'i> Parser<'i> {
             reduce_sig: vec![],
             reduce_exp: vec![],
             reduce_param: vec![],
+            reduce_pat: vec![],
             reduce_match_case: vec![],
         }
     }
@@ -550,7 +560,7 @@ impl<'i> Parser<'i> {
                     _ => {
                         self.reduce_match_case
                             .push(RMatchCase::MatchCases(subject, cases));
-                        //self.reduce_pat.push(RPat::CaseRr);
+                        self.reduce_pat.push(RPat::CaseRr);
                         self.state = S::Pat;
                         continue;
                     }
@@ -572,17 +582,35 @@ impl<'i> Parser<'i> {
                 },
 
                 // <pat> ::=
-                //   <parg>
-                //   <name> {<parg>}
-                // <parg> ::=
-                //   <name>
+                //   {<pterm>}+
+                // <pterm> ::=
                 //   "_"
                 //   "(" <pat> ")"
-                S::Pat => match t {
-                    Token::Ident(ident) => {
-                        let name = Name::ident(loc, self.intern.intern(ident));
-                        let var = self.parse_tree.alloc_pat(Pat::Var(name));
-                        self.reduce_pat(var);
+                //   <name>
+                S::Pat => {
+                    self.reduce_pat.push(RPat::PatAppArg);
+                    self.state = S::PatTerm;
+                    continue;
+                }
+                S::PatAppArg(head) => match t {
+                    Token::Ident(_) | Token::LP | Token::Kw(Keyword::Wildcard) => {
+                        self.reduce_pat.push(RPat::PatAppApply(head));
+                        self.state = S::PatTerm;
+                        continue;
+                    }
+                    _ => {
+                        self.reduce_pat(head);
+                        continue;
+                    }
+                },
+                S::PatTerm => match t {
+                    Token::Ident(_) => {
+                        self.reduce_name.push(RName::PatVar);
+                        self.state = S::Name;
+                        continue;
+                    }
+                    Token::LP => {
+                        self.state = S::PatTermLP(loc);
                         break;
                     }
                     Token::Kw(Keyword::Wildcard) => {
@@ -591,6 +619,25 @@ impl<'i> Parser<'i> {
                         break;
                     }
                     _ => return Err(unexpected(loc, t, "pattern")),
+                },
+                S::PatTermLP(loc_lp) => match t {
+                    Token::Oper(_) => {
+                        self.reduce_name.push(RName::PatVar);
+                        self.state = S::NameOp(loc_lp);
+                        continue;
+                    }
+                    _ => {
+                        self.reduce_pat.push(RPat::PatTermRP);
+                        self.state = S::Pat;
+                        continue;
+                    }
+                },
+                S::PatTermRP(pat) => match t {
+                    Token::RP => {
+                        self.reduce_pat(pat);
+                        break;
+                    }
+                    _ => return Err(expected(loc, "')'", t)),
                 },
             }
         }
@@ -612,6 +659,10 @@ impl<'i> Parser<'i> {
             RName::ExpVar => {
                 let var = self.parse_tree.alloc_exp(Exp::Var(name));
                 self.reduce_exp(var);
+            }
+            RName::PatVar => {
+                let var = self.parse_tree.alloc_pat(Pat::Var(name));
+                self.reduce_pat(var);
             }
         }
     }
@@ -692,10 +743,15 @@ impl<'i> Parser<'i> {
     }
 
     fn reduce_pat(&mut self, pat: PatHnd) {
-        // match self.reduce_pat.pop().unwrap() {
-        //     RPat::CaseRr => self.state = S::CaseRr(pat),
-        // }
-        self.state = S::CaseRr(pat);
+        match self.reduce_pat.pop().unwrap() {
+            RPat::CaseRr => self.state = S::CaseRr(pat),
+            RPat::PatTermRP => self.state = S::PatTermRP(pat),
+            RPat::PatAppArg => self.state = S::PatAppArg(pat),
+            RPat::PatAppApply(head) => {
+                let app = self.parse_tree.alloc_pat(Pat::App(head, pat));
+                self.state = S::PatAppArg(app);
+            }
+        }
     }
 
     fn reduce_match_case(&mut self, case: MatchCase) {
@@ -728,8 +784,10 @@ def const (A : type) (B : type)
 
 def twice (n : nat) : nat = match n {
   Z => Z;
-  #S n' => S (S (twice n'));
+  S n' => S (S (twice n'));
 };
+
+def bigpat : t = match x { (::) (S n) ((::) _ nil) => x; };
 ";
 
         let int = Intern::new();
@@ -761,7 +819,15 @@ def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
         assert_eq!(
             tree.display_decl(&int, decls[2]).to_string(),
             "
-def twice (n : nat) : nat = match n { Z => Z; };
+def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
+"
+            .trim()
+        );
+
+        assert_eq!(
+            tree.display_decl(&int, decls[3]).to_string(),
+            "
+def bigpat : t = match x { (::) (S n) ((::) _ nil) => x; };
 "
             .trim()
         );
