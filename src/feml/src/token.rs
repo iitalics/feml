@@ -26,7 +26,7 @@ impl fmt::Display for Error {
 
 /// Indicates a position in the source text. All offets are stored 0-based, but line and
 /// column will be `Display`'d 1-based.
-#[derive(Eq, PartialEq, Debug, Copy, Clone, Default)]
+#[derive(Eq, PartialEq, Copy, Clone, Default)]
 pub struct Loc {
     /// Offset from start of input.
     pub byte: usize,
@@ -39,6 +39,12 @@ pub struct Loc {
 impl fmt::Display for Loc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line + 1, self.col + 1)
+    }
+}
+
+impl fmt::Debug for Loc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}:{}]", self.line + 1, self.col + 1)
     }
 }
 
