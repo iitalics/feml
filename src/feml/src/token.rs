@@ -100,6 +100,7 @@ impl fmt::Display for Token<'_> {
 /// A keyword token.
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
 pub enum Keyword {
+    Assert,
     Data,
     Def,
     Fn,
@@ -111,6 +112,7 @@ pub enum Keyword {
 impl Keyword {
     pub fn name(self) -> &'static str {
         match self {
+            Keyword::Assert => "assert",
             Keyword::Data => "data",
             Keyword::Def => "def",
             Keyword::Fn => "fn",
@@ -162,6 +164,7 @@ fn char_is_identifier(ch: char) -> bool {
 
 fn ident_to_token(id: &str) -> Token<'_> {
     match id {
+        "assert" => Token::Kw(Keyword::Assert),
         "data" => Token::Kw(Keyword::Data),
         "def" => Token::Kw(Keyword::Def),
         "fn" => Token::Kw(Keyword::Fn),
@@ -298,7 +301,7 @@ def sym (p : x == y) : y == x = match p {
   relf => refl;
 };
 
-let _ = sym refl;
+assert sym _ refl : Z;
 ";
         let mut tkz = Tokenizer::new(INPUT);
         let mut next = || {
@@ -358,12 +361,13 @@ let _ = sym refl;
         assert_eq!(next(), (6, 14, Sm));
         assert_eq!(next(), (7, 0, RC));
         assert_eq!(next(), (7, 1, Sm));
-        assert_eq!(next(), (9, 0, Kw(Let)));
-        assert_eq!(next(), (9, 4, Kw(Wildcard)));
-        assert_eq!(next(), (9, 6, Eq));
-        assert_eq!(next(), (9, 8, Ident("sym")));
-        assert_eq!(next(), (9, 12, Ident("refl")));
-        assert_eq!(next(), (9, 16, Sm));
+        assert_eq!(next(), (9, 0, Kw(Assert)));
+        assert_eq!(next(), (9, 7, Ident("sym")));
+        assert_eq!(next(), (9, 11, Kw(Wildcard)));
+        assert_eq!(next(), (9, 13, Ident("refl")));
+        assert_eq!(next(), (9, 18, Cl));
+        assert_eq!(next(), (9, 20, Ident("Z")));
+        assert_eq!(next(), (9, 21, Sm));
         assert!(tkz.next().is_none());
     }
 }

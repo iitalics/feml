@@ -106,6 +106,9 @@ enum S<'i> {
     Def,
     DefEq(Loc, SigHnd),
     DefSm(Loc, SigHnd, TyHnd),
+    Assert,
+    AssertCl(Loc, ExpHnd),
+    AssertSm(Loc, ExpHnd, TyHnd),
     Name,
     NameOp(Loc),
     NameOpRP(Name<'i>),
@@ -165,6 +168,8 @@ enum RParam<'i> {
 // parser reduction for Exp type
 enum RExp<'i> {
     DefSm(Loc, SigHnd),
+    AssertCl(Loc),
+    AssertSm(Loc, ExpHnd),
     Sig(Name<'i>),
     ParamRP(Name<'i>),
     InfixOp(Prec),
@@ -212,13 +217,48 @@ impl<'i> Parser<'i> {
             match mem::replace(&mut self.state, S::Error) {
                 S::Error => panic!("cannot process token in error state"),
 
-                // <top> ::= <def> | <data>
+                // <top> ::= <assert> | <def>
                 S::Top => match t {
                     Token::Kw(Keyword::Def) => {
                         self.state = S::Def;
                         continue;
                     }
-                    _ => return Err(unexpected(loc, t, "'def' or 'data' declaration")),
+                    Token::Kw(Keyword::Assert) => {
+                        self.state = S::Assert;
+                        continue;
+                    }
+                    _ => return Err(unexpected(loc, t, "beginning of declaration")),
+                },
+
+                // <assert> ::=
+                //   "assert" <exp> ":" <ty> ";"
+                S::Assert => match t {
+                    Token::Kw(Keyword::Assert) => {
+                        self.reduce_exp.push(RExp::AssertCl(loc));
+                        self.state = S::Exp;
+                        break;
+                    }
+                    _ => return Err(expected(loc, "'assert'", t)),
+                },
+                S::AssertCl(loc_assert, exp) => match t {
+                    Token::Cl => {
+                        self.reduce_exp.push(RExp::AssertSm(loc_assert, exp));
+                        self.state = S::Exp;
+                        break;
+                    }
+                    _ => return Err(expected(loc, "':' after expression", t)),
+                },
+                S::AssertSm(loc_assert, exp, ty) => match t {
+                    Token::Sm => {
+                        self.parse_tree.alloc_decl(Decl::Assert {
+                            loc_assert,
+                            exp,
+                            ty,
+                        });
+                        self.state = S::Top;
+                        break;
+                    }
+                    _ => return Err(expected(loc, "';' after type", t)),
                 },
 
                 // <def> ::=
@@ -688,6 +728,8 @@ impl<'i> Parser<'i> {
     fn reduce_exp(&mut self, exp: ExpHnd) {
         match self.reduce_exp.pop().unwrap() {
             RExp::DefSm(loc, sig) => self.state = S::DefSm(loc, sig, exp),
+            RExp::AssertCl(loc) => self.state = S::AssertCl(loc, exp),
+            RExp::AssertSm(loc, e) => self.state = S::AssertSm(loc, e, exp),
             RExp::ParamRP(name) => self.state = S::ParamRP(name, exp),
             RExp::AppArg => self.state = S::AppArg(exp),
             RExp::InfixOp(prec) => self.state = S::InfixOp(prec, exp),
@@ -812,7 +854,7 @@ def twice (n : nat) : nat = match n {
   S n' => S (S (twice n'));
 };
 
-def bigpat : t = match x { (::) (S n) ((::) _ nil) => x; };
+assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 ";
 
         let int = Intern::new();
@@ -852,7 +894,7 @@ def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
         assert_eq!(
             tree.display_decl(&int, decls[3]).to_string(),
             "
-def bigpat : t = match x { (::) (S n) ((::) _ nil) => x; };
+assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 "
             .trim()
         );

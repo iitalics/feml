@@ -125,6 +125,13 @@ pub enum Decl {
         //pub loc_rc: Loc,
         //pub loc_sm: Loc,
     },
+    Assert {
+        loc_assert: Loc,
+        exp: ExpHnd,
+        //pub loc_cl: Loc,
+        ty: TyHnd,
+        //pub loc_sm: Loc,
+    },
 }
 
 /// Signatures for definitions.
@@ -336,6 +343,14 @@ impl<'s> ParseTree<'s> {
                     write!(f, ";")?;
                 }
                 write!(f, " }};")
+            }
+
+            Decl::Assert { exp, ty, .. } => {
+                write!(f, "assert ")?;
+                self.fmt_exp(f, int, *exp, 0)?;
+                write!(f, " : ")?;
+                self.fmt_exp(f, int, *ty, 0)?;
+                write!(f, ";")
             }
         }
     }
@@ -578,17 +593,25 @@ mod test {
             "fn (x : nat) => fn y => x x (y y)"
         );
 
-        let ty = {
+        let decl = {
+            let app_S_Z = pt.alloc_exp(Exp::App(var_S, var_Z));
             let par_x_B = Param {
                 name: nm_x,
                 ty: var_B,
             };
             let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(par_x_B, var_C)));
             let arr_A_B_C = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
-            arr_A_B_C
+            pt.alloc_decl(Decl::Assert {
+                loc_assert: loc,
+                exp: app_S_Z,
+                ty: arr_A_B_C,
+            })
         };
 
-        assert_eq!(pt.display_exp(&int, ty).to_string(), "A -> (x : B) -> C");
+        assert_eq!(
+            pt.display_decl(&int, decl).to_string(),
+            "assert S Z : A -> (x : B) -> C;"
+        );
 
         let exp = {
             let exp_S_y = pt.alloc_exp(Exp::App(var_S, var_y));
