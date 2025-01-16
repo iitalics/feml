@@ -128,7 +128,8 @@ enum S<'i> {
     InfixArrowAr(Prec, Param<'i>),
     Lam,
     LamParam,
-    LamAr(Name<'i>, Option<TyHnd>),
+    LamUntypedAr(Name<'i>),
+    LamTypedAr(Param<'i>),
     Match,
     MatchLC(ExpHnd),
     MatchCases(ExpHnd),
@@ -145,7 +146,7 @@ enum S<'i> {
 enum RName {
     SigParams,
     ExpVar,
-    LamAr,
+    LamUntypedAr,
     PatVar,
 }
 
@@ -158,7 +159,7 @@ enum RSig {
 enum RParam<'i> {
     SigParam(Name<'i>),
     InfixArrowAr(Prec),
-    LamAr,
+    LamTypedAr,
 }
 
 // parser reduction for Exp type
@@ -172,7 +173,8 @@ enum RExp<'i> {
     AppApply(ExpHnd),
     TermRP,
     InfixArrowApply(Prec, Param<'i>),
-    Lam(Name<'i>, Option<TyHnd>),
+    LamUntyped(Name<'i>),
+    LamTyped(Param<'i>),
     MatchLC,
     CaseSm(PatHnd),
 }
@@ -516,20 +518,24 @@ impl<'i> Parser<'i> {
                 },
                 S::LamParam => match t {
                     Token::Ident(_) => {
-                        self.reduce_name.push(RName::LamAr);
+                        self.reduce_name.push(RName::LamUntypedAr);
                         self.state = S::Name;
                         continue;
                     }
                     Token::LP => {
-                        self.reduce_param.push(RParam::LamAr);
+                        self.reduce_param.push(RParam::LamTypedAr);
                         self.state = S::Param;
                         continue;
                     }
                     _ => return Err(expected(loc, "name or '(name : ty)'", t)),
                 },
-                S::LamAr(arg_name, arg_ty) => match t {
+                state @ (S::LamUntypedAr(_) | S::LamTypedAr(_)) => match t {
                     Token::Rr => {
-                        self.reduce_exp.push(RExp::Lam(arg_name, arg_ty));
+                        self.reduce_exp.push(match state {
+                            S::LamUntypedAr(n) => RExp::LamUntyped(n),
+                            S::LamTypedAr(p) => RExp::LamTyped(p),
+                            _ => unreachable!(),
+                        });
                         self.state = S::Exp;
                         break;
                     }
@@ -661,7 +667,7 @@ impl<'i> Parser<'i> {
     fn reduce_name(&mut self, name: Name<'i>) {
         match self.reduce_name.pop().unwrap() {
             RName::SigParams => self.state = S::SigParams(name),
-            RName::LamAr => self.state = S::LamAr(name, None),
+            RName::LamUntypedAr => self.state = S::LamUntypedAr(name),
             RName::ExpVar => {
                 let var = self.parse_tree.alloc_exp(Exp::Var(name));
                 self.reduce_exp(var);
@@ -719,18 +725,19 @@ impl<'i> Parser<'i> {
             }
             RExp::InfixArrowApply(prec, param) => {
                 // (name : ty) -> exp
-                let arrow = Arrow::named(param.name, param.ty, exp);
+                let arrow = Arrow::named(param, exp);
                 let arr = self.parse_tree.alloc_exp(Exp::Arr(arrow));
                 self.state = S::InfixOp(prec, arr);
             }
-            RExp::Lam(arg_name, arg_ty) => {
-                let lambda = Lambda {
-                    arg_name,
-                    arg_ty,
-                    body: exp,
-                };
+            RExp::LamUntyped(name) => {
+                let lambda = Lambda::untyped(name, exp);
                 let lam = self.parse_tree.alloc_exp(Exp::Lam(lambda));
                 // TODO: turn tail call into loop
+                self.reduce_exp(lam);
+            }
+            RExp::LamTyped(param) => {
+                let lambda = Lambda::typed(param, exp);
+                let lam = self.parse_tree.alloc_exp(Exp::Lam(lambda));
                 self.reduce_exp(lam);
             }
         }
@@ -739,7 +746,7 @@ impl<'i> Parser<'i> {
     fn reduce_param(&mut self, param: Param<'i>) {
         match self.reduce_param.pop().unwrap() {
             RParam::InfixArrowAr(prec) => self.state = S::InfixArrowAr(prec, param),
-            RParam::LamAr => self.state = S::LamAr(param.name, Some(param.ty)),
+            RParam::LamTypedAr => self.state = S::LamTypedAr(param),
             RParam::SigParam(name) => {
                 let params = self.param_list_stack.last_mut().unwrap();
                 params.push(param);

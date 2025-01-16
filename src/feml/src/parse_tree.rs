@@ -115,15 +115,20 @@ pub enum Decl {
         loc_def: Loc,
         sig: SigHnd,
         body: ExpHnd,
+        //pub loc_sm: Loc,
     },
     Data {
         loc_data: Loc,
         sig: SigHnd,
+        //pub loc_lc: Loc,
         ctors: Vec<SigHnd>,
+        //pub loc_rc: Loc,
+        //pub loc_sm: Loc,
     },
 }
 
 /// Signatures for definitions.
+// name (x : t) ... : u
 #[derive(Clone)]
 pub struct Sig<'s> {
     pub name: Name<'s>,
@@ -133,10 +138,14 @@ pub struct Sig<'s> {
 }
 
 /// Parameters to definitions.
+// (x : t)
 #[derive(Copy, Clone)]
 pub struct Param<'s> {
+    //pub loc_lp : Loc,
     pub name: Name<'s>,
+    //pub loc_cl : Loc,
     pub ty: TyHnd,
+    //pub loc_rp : Loc,
 }
 
 /// Expressions.
@@ -158,10 +167,14 @@ pub enum Exp<'s> {
 type Arg = ExpHnd;
 
 /// Arrow types.
+// x -> u
+// (x : t) -> u
 #[derive(Clone)]
 pub struct Arrow<'s> {
-    pub dom_name: Option<Name<'s>>,
+    // note: dom is redundant if param is not None
     pub dom: TyHnd,
+    pub param: Option<Param<'s>>,
+    //pub loc_ar : Loc,
     pub rng: TyHnd,
 }
 
@@ -169,9 +182,29 @@ pub struct Arrow<'s> {
 #[derive(Clone)]
 pub struct Lambda<'s> {
     //pub loc_fn: Loc,
-    pub arg_name: Name<'s>,
-    pub arg_ty: Option<TyHnd>,
+    // note: name is redundant if param is not None
+    pub name: Name<'s>,
+    pub param: Option<Param<'s>>,
+    //pub loc_rr: Loc,
     pub body: ExpHnd,
+}
+
+impl<'s> Lambda<'s> {
+    pub fn untyped(name: Name<'s>, body: ExpHnd) -> Self {
+        Self {
+            name,
+            param: None,
+            body,
+        }
+    }
+
+    pub fn typed(param: Param<'s>, body: ExpHnd) -> Self {
+        Self {
+            name: param.name,
+            param: Some(param),
+            body,
+        }
+    }
 }
 
 /// Match expressions.
@@ -199,16 +232,16 @@ type PatArg = PatHnd;
 impl<'s> Arrow<'s> {
     pub fn unnamed(dom: ExpHnd, rng: ExpHnd) -> Self {
         Self {
-            dom_name: None,
             dom,
+            param: None,
             rng,
         }
     }
 
-    pub fn named(dom_name: Name<'s>, dom: ExpHnd, rng: ExpHnd) -> Self {
+    pub fn named(dom: Param<'s>, rng: ExpHnd) -> Self {
         Self {
-            dom_name: Some(dom_name),
-            dom,
+            dom: dom.ty,
+            param: Some(dom),
             rng,
         }
     }
@@ -330,16 +363,16 @@ impl<'s> ParseTree<'s> {
     ) -> fmt::Result {
         match self.view_exp(exp) {
             Exp::Var(name) => self.fmt_name(f, int, name),
-            Exp::Arr(Arrow { dom_name, dom, rng }) => {
+            Exp::Arr(Arrow { dom, param, rng }) => {
                 if prec > 1 {
                     write!(f, "(")?;
                 }
-                match dom_name {
-                    Some(name) => {
+                match param {
+                    Some(Param { name, ty }) => {
                         write!(f, "(")?;
                         self.fmt_name(f, int, name)?;
                         write!(f, " : ")?;
-                        self.fmt_exp(f, int, *dom, 0)?;
+                        self.fmt_exp(f, int, *ty, 0)?;
                         write!(f, ")")?;
                     }
                     None => {
@@ -365,25 +398,21 @@ impl<'s> ParseTree<'s> {
                 }
                 Ok(())
             }
-            Exp::Lam(Lambda {
-                arg_name,
-                arg_ty,
-                body,
-            }) => {
+            Exp::Lam(Lambda { name, param, body }) => {
                 if prec > 0 {
                     write!(f, "(")?;
                 }
                 write!(f, "fn ")?;
-                match arg_ty {
-                    Some(arg_ty) => {
+                match param {
+                    Some(Param { name, ty }) => {
                         write!(f, "(")?;
-                        self.fmt_name(f, int, arg_name)?;
+                        self.fmt_name(f, int, name)?;
                         write!(f, " : ")?;
-                        self.fmt_exp(f, int, *arg_ty, 0)?;
+                        self.fmt_exp(f, int, *ty, 0)?;
                         write!(f, ")")?;
                     }
                     None => {
-                        self.fmt_name(f, int, arg_name)?;
+                        self.fmt_name(f, int, name)?;
                     }
                 }
                 write!(f, " => ")?;
@@ -535,16 +564,12 @@ mod test {
             let exp_x_x = pt.alloc_exp(Exp::App(var_x, var_x));
             let exp_y_y = pt.alloc_exp(Exp::App(var_y, var_y));
             let exp_app = pt.alloc_exp(Exp::App(exp_x_x, exp_y_y));
-            let exp_fn_y = pt.alloc_exp(Exp::Lam(Lambda {
-                arg_name: nm_y,
-                arg_ty: None,
-                body: exp_app,
-            }));
-            let exp_fn_x = pt.alloc_exp(Exp::Lam(Lambda {
-                arg_name: nm_x,
-                arg_ty: Some(var_nat),
-                body: exp_fn_y,
-            }));
+            let exp_fn_y = pt.alloc_exp(Exp::Lam(Lambda::untyped(nm_y, exp_app)));
+            let par_x_nat = Param {
+                name: nm_x,
+                ty: var_nat,
+            };
+            let exp_fn_x = pt.alloc_exp(Exp::Lam(Lambda::typed(par_x_nat, exp_fn_y)));
             exp_fn_x
         };
 
@@ -554,7 +579,11 @@ mod test {
         );
 
         let ty = {
-            let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(nm_x, var_B, var_C)));
+            let par_x_B = Param {
+                name: nm_x,
+                ty: var_B,
+            };
+            let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(par_x_B, var_C)));
             let arr_A_B_C = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
             arr_A_B_C
         };
