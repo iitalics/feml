@@ -1,83 +1,11 @@
 use crate::token::Loc;
 use std::fmt;
 
-/// The parse tree is the immediate result of parsing which has not had any type- or
-/// wellformedness-checks done yet.
-pub struct ParseTree<'s> {
-    decl: Vec<Decl>,
-    sig: Vec<Sig<'s>>,
-    exp: Vec<Exp<'s>>,
-    pat: Vec<Pat<'s>>,
+pub type Allocator = bumpalo::Bump;
+
+pub fn allocator() -> Allocator {
+    Allocator::new()
 }
-
-impl<'s> ParseTree<'s> {
-    pub fn new() -> Self {
-        Self {
-            decl: Vec::with_capacity(256),
-            sig: Vec::with_capacity(256),
-            exp: Vec::with_capacity(4096),
-            pat: Vec::with_capacity(1024),
-        }
-    }
-
-    pub fn decls(&self) -> Vec<DeclHnd> {
-        (0..self.decl.len()).map(|i| DeclHnd(i as _)).collect()
-    }
-
-    pub fn alloc_decl(&mut self, decl: Decl) -> DeclHnd {
-        DeclHnd(extend(&mut self.decl, decl))
-    }
-
-    pub fn view_decl(&self, h: DeclHnd) -> &Decl {
-        &self.decl[h.0 as usize]
-    }
-
-    pub fn alloc_sig(&mut self, sig: Sig<'s>) -> SigHnd {
-        SigHnd(extend(&mut self.sig, sig))
-    }
-
-    pub fn view_sig(&self, h: SigHnd) -> &Sig<'s> {
-        &self.sig[h.0 as usize]
-    }
-
-    pub fn alloc_exp(&mut self, exp: Exp<'s>) -> ExpHnd {
-        ExpHnd(extend(&mut self.exp, exp))
-    }
-
-    pub fn view_exp(&self, h: ExpHnd) -> &Exp<'s> {
-        &self.exp[h.0 as usize]
-    }
-
-    pub fn alloc_pat(&mut self, pat: Pat<'s>) -> PatHnd {
-        PatHnd(extend(&mut self.pat, pat))
-    }
-
-    pub fn view_pat(&self, h: PatHnd) -> &Pat<'s> {
-        &self.pat[h.0 as usize]
-    }
-}
-
-// == Handles ==
-
-type Hnd = u32;
-
-/// Handle referencing a declaration.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct DeclHnd(Hnd);
-
-/// Handle referencing a signature.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct SigHnd(Hnd);
-
-/// Handle referencing an expression.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ExpHnd(Hnd);
-
-/// Handle referencing a pattern.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct PatHnd(Hnd);
-
-pub type TyHnd = ExpHnd;
 
 // == Syntax tree ==
 
@@ -108,27 +36,27 @@ impl<'s> Name<'s> {
 }
 
 /// Top-level declarations.
-#[derive(Clone)]
-pub enum Decl {
+#[derive(Copy, Clone)]
+pub enum Decl<'s, 'a> {
     Def {
         loc_def: Loc,
-        sig: SigHnd,
-        body: ExpHnd,
+        sig: &'a Sig<'s, 'a>,
+        body: &'a Exp<'s, 'a>,
         //pub loc_sm: Loc,
     },
     Data {
         loc_data: Loc,
-        sig: SigHnd,
+        sig: &'a Sig<'s, 'a>,
         //pub loc_lc: Loc,
-        ctors: Vec<SigHnd>,
+        ctors: &'a [&'a Sig<'s, 'a>],
         //pub loc_rc: Loc,
         //pub loc_sm: Loc,
     },
     Assert {
         loc_assert: Loc,
-        exp: ExpHnd,
+        exp: &'a Exp<'s, 'a>,
         //pub loc_cl: Loc,
-        ty: TyHnd,
+        ty: &'a Ty<'s, 'a>,
         //pub loc_sm: Loc,
     },
 }
@@ -136,67 +64,87 @@ pub enum Decl {
 /// Signatures for definitions.
 // name (x : t) ... : u
 #[derive(Clone)]
-pub struct Sig<'s> {
+pub struct Sig<'s, 'a> {
     pub name: Name<'s>,
-    pub params: Vec<Param<'s>>,
+    pub params: &'a [Param<'s, 'a>],
     //pub loc_cl : Loc,
-    pub ret_ty: TyHnd,
+    pub ret_ty: &'a Ty<'s, 'a>,
 }
 
 /// Parameters to definitions.
 // (x : t)
 #[derive(Copy, Clone)]
-pub struct Param<'s> {
+pub struct Param<'s, 'a> {
     //pub loc_lp : Loc,
     pub name: Name<'s>,
     //pub loc_cl : Loc,
-    pub ty: TyHnd,
+    pub ty: &'a Ty<'s, 'a>,
     //pub loc_rp : Loc,
 }
 
 /// Expressions.
-#[derive(Clone)]
-pub enum Exp<'s> {
+#[derive(Copy, Clone)]
+pub enum Exp<'s, 'a> {
     // x
     Var(Name<'s>),
     // f a
-    App(ExpHnd, Arg),
+    App(&'a Exp<'s, 'a>, &'a Arg<'s, 'a>),
     // d -> r
-    Arr(Arrow<'s>),
+    Arr(Arrow<'s, 'a>),
     // fn x => e
-    Lam(Lambda<'s>),
+    Lam(Lambda<'s, 'a>),
     // match v { p => e; }
-    Mat(Match),
+    Mat(Match<'s, 'a>),
 }
 
+pub type Ty<'s, 'a> = Exp<'s, 'a>;
+
 // TODO: named/explicit args
-type Arg = ExpHnd;
+pub type Arg<'s, 'a> = Exp<'s, 'a>;
 
 /// Arrow types.
 // x -> u
 // (x : t) -> u
-#[derive(Clone)]
-pub struct Arrow<'s> {
+#[derive(Copy, Clone)]
+pub struct Arrow<'s, 'a> {
     // note: dom is redundant if param is not None
-    pub dom: TyHnd,
-    pub param: Option<Param<'s>>,
+    pub dom: &'a Ty<'s, 'a>,
+    pub param: Option<Param<'s, 'a>>,
     //pub loc_ar : Loc,
-    pub rng: TyHnd,
+    pub rng: &'a Ty<'s, 'a>,
+}
+
+impl<'s, 'a> Arrow<'s, 'a> {
+    pub fn unnamed(dom: &'a Exp<'s, 'a>, rng: &'a Exp<'s, 'a>) -> Self {
+        Self {
+            dom,
+            param: None,
+            rng,
+        }
+    }
+
+    pub fn named(dom: Param<'s, 'a>, rng: &'a Exp<'s, 'a>) -> Self {
+        Self {
+            dom: dom.ty,
+            param: Some(dom),
+            rng,
+        }
+    }
 }
 
 /// Lambda expressions.
-#[derive(Clone)]
-pub struct Lambda<'s> {
+#[derive(Copy, Clone)]
+pub struct Lambda<'s, 'a> {
     //pub loc_fn: Loc,
     // note: name is redundant if param is not None
     pub name: Name<'s>,
-    pub param: Option<Param<'s>>,
+    pub param: Option<Param<'s, 'a>>,
     //pub loc_rr: Loc,
-    pub body: ExpHnd,
+    pub body: &'a Exp<'s, 'a>,
 }
 
-impl<'s> Lambda<'s> {
-    pub fn untyped(name: Name<'s>, body: ExpHnd) -> Self {
+impl<'s, 'a> Lambda<'s, 'a> {
+    pub fn untyped(name: Name<'s>, body: &'a Exp<'s, 'a>) -> Self {
         Self {
             name,
             param: None,
@@ -204,7 +152,7 @@ impl<'s> Lambda<'s> {
         }
     }
 
-    pub fn typed(param: Param<'s>, body: ExpHnd) -> Self {
+    pub fn typed(param: Param<'s, 'a>, body: &'a Exp<'s, 'a>) -> Self {
         Self {
             name: param.name,
             param: Some(param),
@@ -214,263 +162,175 @@ impl<'s> Lambda<'s> {
 }
 
 /// Match expressions.
-#[derive(Clone)]
-pub struct Match {
-    pub subject: ExpHnd,
-    pub cases: Vec<MatchCase>,
+#[derive(Copy, Clone)]
+pub struct Match<'s, 'a> {
+    pub subject: &'a Exp<'s, 'a>,
+    pub cases: &'a [MatchCase<'s, 'a>],
 }
 
-pub type MatchCase = (PatHnd, ExpHnd);
+pub type MatchCase<'s, 'a> = (&'a Pat<'s, 'a>, &'a Exp<'s, 'a>);
 
-/// Pattenrs.
-#[derive(Clone)]
-pub enum Pat<'s> {
+/// Patterns.
+#[derive(Copy, Clone)]
+pub enum Pat<'s, 'a> {
     // _
     Any(Loc),
     // x
     Var(Name<'s>),
     // f a
-    App(PatHnd, PatArg),
+    App(&'a Pat<'s, 'a>, &'a PatArg<'s, 'a>),
 }
 
-type PatArg = PatHnd;
-
-impl<'s> Arrow<'s> {
-    pub fn unnamed(dom: ExpHnd, rng: ExpHnd) -> Self {
-        Self {
-            dom,
-            param: None,
-            rng,
-        }
-    }
-
-    pub fn named(dom: Param<'s>, rng: ExpHnd) -> Self {
-        Self {
-            dom: dom.ty,
-            param: Some(dom),
-            rng,
-        }
-    }
-}
-
-fn extend<T>(nodes: &mut Vec<T>, item: T) -> Hnd {
-    let h = nodes.len() as Hnd;
-    nodes.push(item);
-    h
-}
+type PatArg<'s, 'a> = Pat<'s, 'a>;
 
 // == Pretty printing ==
 
-pub struct DisplayDecl<'t, 's> {
-    parse_tree: &'t ParseTree<'s>,
-    decl: DeclHnd,
-}
-
-impl fmt::Display for DisplayDecl<'_, '_> {
+impl fmt::Display for Decl<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_decl(f, self.decl)
-    }
-}
-
-pub struct DisplayExp<'t, 's> {
-    parse_tree: &'t ParseTree<'s>,
-    exp: ExpHnd,
-}
-
-impl fmt::Display for DisplayExp<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_exp(f, self.exp, 0)
-    }
-}
-
-pub struct DisplayPat<'t, 's> {
-    parse_tree: &'t ParseTree<'s>,
-    pat: PatHnd,
-}
-
-impl fmt::Display for DisplayPat<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_pat(f, self.pat, 0)
-    }
-}
-
-impl<'s> ParseTree<'s> {
-    pub fn display_decl<'t>(&'t self, decl: DeclHnd) -> DisplayDecl<'t, 's> {
-        DisplayDecl {
-            parse_tree: self,
-            decl,
-        }
-    }
-
-    pub fn display_exp<'t>(&'t self, exp: ExpHnd) -> DisplayExp<'t, 's> {
-        DisplayExp {
-            parse_tree: self,
-            exp,
-        }
-    }
-
-    pub fn display_pat<'t>(&'t self, pat: PatHnd) -> DisplayPat<'t, 's> {
-        DisplayPat {
-            parse_tree: self,
-            pat,
-        }
-    }
-
-    fn fmt_decl(&self, f: &mut fmt::Formatter<'_>, decl: DeclHnd) -> fmt::Result {
-        match self.view_decl(decl) {
+        match self {
             Decl::Def { sig, body, .. } => {
-                write!(f, "def ")?;
-                self.fmt_sig(f, *sig)?;
-                write!(f, " = ")?;
-                self.fmt_exp(f, *body, 0)?;
-                write!(f, ";")
+                write!(f, "def {sig} = {body};")
             }
 
             Decl::Data { sig, ctors, .. } => {
-                write!(f, "data ")?;
-                self.fmt_sig(f, *sig)?;
-                write!(f, " {{")?;
+                write!(f, "data {sig} {{")?;
                 for ctor in ctors.iter() {
-                    write!(f, " ")?;
-                    self.fmt_sig(f, *ctor)?;
-                    write!(f, ";")?;
+                    write!(f, " {ctor};")?;
                 }
                 write!(f, " }};")
             }
 
             Decl::Assert { exp, ty, .. } => {
-                write!(f, "assert ")?;
-                self.fmt_exp(f, *exp, 0)?;
-                write!(f, " : ")?;
-                self.fmt_exp(f, *ty, 0)?;
-                write!(f, ";")
+                write!(f, "assert {exp} : {ty};")
             }
         }
     }
+}
 
-    fn fmt_sig(&self, f: &mut fmt::Formatter<'_>, sig: SigHnd) -> fmt::Result {
-        let sig = self.view_sig(sig);
-        self.fmt_name(f, &sig.name)?;
-        for param in sig.params.iter() {
-            write!(f, " (")?;
-            self.fmt_name(f, &param.name)?;
-            write!(f, " : ")?;
-            self.fmt_exp(f, param.ty, 0)?;
-            write!(f, ")")?;
+impl fmt::Display for Sig<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        for Param { name, ty } in self.params.iter() {
+            write!(f, " ({name} : {ty})")?;
         }
-        write!(f, " : ")?;
-        self.fmt_exp(f, sig.ret_ty, 0)
+        write!(f, " : {}", self.ret_ty)
     }
+}
 
-    fn fmt_exp(&self, f: &mut fmt::Formatter<'_>, exp: ExpHnd, prec: u32) -> fmt::Result {
-        match self.view_exp(exp) {
-            Exp::Var(name) => self.fmt_name(f, name),
+/// Display formatting for [`Exp`] at a specific precedence level.
+pub struct DisplayExp<'s, 'a, 'e> {
+    exp: &'e Exp<'s, 'a>,
+    prec: u32,
+}
+
+impl<'s, 'a> Exp<'s, 'a> {
+    pub fn display_prec(&self, prec: u32) -> DisplayExp<'s, 'a, '_> {
+        DisplayExp { exp: self, prec }
+    }
+}
+
+fn open(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
+    if prec > min_prec {
+        write!(f, "(")?;
+    }
+    Ok(())
+}
+
+fn close(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
+    if prec > min_prec {
+        write!(f, ")")?;
+    }
+    Ok(())
+}
+
+impl fmt::Display for Exp<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.display_prec(0).fmt(f)
+    }
+}
+
+impl fmt::Display for DisplayExp<'_, '_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.exp {
+            Exp::Var(name) => write!(f, "{name}"),
             Exp::Arr(Arrow { dom, param, rng }) => {
-                if prec > 1 {
-                    write!(f, "(")?;
-                }
+                open(f, self.prec, 1)?;
                 match param {
                     Some(Param { name, ty }) => {
-                        write!(f, "(")?;
-                        self.fmt_name(f, name)?;
-                        write!(f, " : ")?;
-                        self.fmt_exp(f, *ty, 0)?;
-                        write!(f, ")")?;
+                        write!(f, "({name} : {ty})")?;
                     }
                     None => {
-                        self.fmt_exp(f, *dom, 2)?;
+                        write!(f, "{}", dom.display_prec(2))?;
                     }
                 }
-                write!(f, " -> ")?;
-                self.fmt_exp(f, *rng, 1)?;
-                if prec > 1 {
-                    write!(f, ")")?;
-                }
-                Ok(())
+                write!(f, " -> {}", rng.display_prec(1))?;
+                close(f, self.prec, 1)
             }
             Exp::App(fun, arg) => {
-                if prec > 2 {
-                    write!(f, "(")?;
-                }
-                self.fmt_exp(f, *fun, 2)?;
-                write!(f, " ")?;
-                self.fmt_exp(f, *arg, 3)?;
-                if prec > 2 {
-                    write!(f, ")")?;
-                }
-                Ok(())
+                open(f, self.prec, 2)?;
+                write!(f, "{} {}", fun.display_prec(2), arg.display_prec(3))?;
+                close(f, self.prec, 2)
             }
             Exp::Lam(Lambda { name, param, body }) => {
-                if prec > 0 {
-                    write!(f, "(")?;
-                }
+                open(f, self.prec, 0)?;
                 write!(f, "fn ")?;
                 match param {
-                    Some(Param { name, ty }) => {
-                        write!(f, "(")?;
-                        self.fmt_name(f, name)?;
-                        write!(f, " : ")?;
-                        self.fmt_exp(f, *ty, 0)?;
-                        write!(f, ")")?;
-                    }
-                    None => {
-                        self.fmt_name(f, name)?;
-                    }
+                    Some(Param { name, ty }) => write!(f, "({name} : {ty})")?,
+                    None => write!(f, "{name}")?,
                 }
-                write!(f, " => ")?;
-                self.fmt_exp(f, *body, 0)?;
-                if prec > 0 {
-                    write!(f, ")")?;
-                }
-                Ok(())
+                write!(f, " => {}", body.display_prec(0))?;
+                close(f, self.prec, 0)
             }
             Exp::Mat(Match { subject, cases }) => {
-                if prec > 0 {
-                    write!(f, "(")?;
-                }
-                write!(f, "match ")?;
-                self.fmt_exp(f, *subject, 2)?;
-                write!(f, " {{")?;
+                open(f, self.prec, 0)?;
+                write!(f, "match {} {{", subject.display_prec(2))?;
                 for (lhs, rhs) in cases.iter() {
-                    write!(f, " ")?;
-                    self.fmt_pat(f, *lhs, 0)?;
-                    write!(f, " => ")?;
-                    self.fmt_exp(f, *rhs, 0)?;
-                    write!(f, ";")?;
+                    write!(f, " {lhs} => {rhs};")?;
                 }
                 write!(f, " }}")?;
-                if prec > 0 {
-                    write!(f, ")")?;
-                }
-                Ok(())
+                close(f, self.prec, 0)
             }
         }
     }
+}
 
-    fn fmt_pat(&self, f: &mut fmt::Formatter<'_>, pat: PatHnd, prec: u32) -> fmt::Result {
-        match self.view_pat(pat) {
+/// Display formatting for [`Pat`] at a specific precedence level.
+pub struct DisplayPat<'s, 'a, 'p> {
+    pat: &'p Pat<'s, 'a>,
+    prec: u32,
+}
+
+impl<'s, 'a> Pat<'s, 'a> {
+    pub fn display_prec(&self, prec: u32) -> DisplayPat<'s, 'a, '_> {
+        DisplayPat { pat: self, prec }
+    }
+}
+
+impl fmt::Display for Pat<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.display_prec(0).fmt(f)
+    }
+}
+
+impl fmt::Display for DisplayPat<'_, '_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.pat {
             Pat::Any(_) => write!(f, "_"),
-            Pat::Var(name) => self.fmt_name(f, name),
+            Pat::Var(name) => write!(f, "{name}"),
             Pat::App(head, arg) => {
-                if prec > 0 {
-                    write!(f, "(")?;
-                }
-                self.fmt_pat(f, *head, 0)?;
-                write!(f, " ")?;
-                self.fmt_pat(f, *arg, 1)?;
-                if prec > 0 {
-                    write!(f, ")")?;
-                }
-                Ok(())
+                open(f, self.prec, 2)?;
+                write!(f, "{} {}", head.display_prec(2), arg.display_prec(3))?;
+                close(f, self.prec, 2)
             }
         }
     }
+}
 
-    fn fmt_name(&self, f: &mut fmt::Formatter<'_>, name: &Name<'s>) -> fmt::Result {
-        if name.is_operator {
-            write!(f, "({})", name.id)
-        } else {
-            write!(f, "{}", name.id)
+impl fmt::Display for Name<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.is_operator {
+            true => write!(f, "({})", self.id),
+            false => write!(f, "{}", self.id),
         }
     }
 }
@@ -482,7 +342,7 @@ mod test {
     #[test]
     #[allow(non_snake_case)]
     fn test_construct_and_pretty_print() {
-        let mut pt = ParseTree::new();
+        let al = allocator();
         let loc = Loc::default();
 
         let nm_A = Name::ident(loc, "A");
@@ -496,16 +356,16 @@ mod test {
         let nm_type = Name::ident(loc, "type");
         let nm_x = Name::ident(loc, "x");
         let nm_y = Name::ident(loc, "y");
-        let var_A = pt.alloc_exp(Exp::Var(nm_A));
-        let var_B = pt.alloc_exp(Exp::Var(nm_B));
-        let var_C = pt.alloc_exp(Exp::Var(nm_C));
-        let var_S = pt.alloc_exp(Exp::Var(nm_S));
-        let var_Z = pt.alloc_exp(Exp::Var(nm_Z));
-        let var_eq = pt.alloc_exp(Exp::Var(nm_eq));
-        let var_nat = pt.alloc_exp(Exp::Var(nm_nat));
-        let var_type = pt.alloc_exp(Exp::Var(nm_type));
-        let var_x = pt.alloc_exp(Exp::Var(nm_x));
-        let var_y = pt.alloc_exp(Exp::Var(nm_y));
+        let var_A = al.alloc(Exp::Var(nm_A));
+        let var_B = al.alloc(Exp::Var(nm_B));
+        let var_C = al.alloc(Exp::Var(nm_C));
+        let var_S = al.alloc(Exp::Var(nm_S));
+        let var_Z = al.alloc(Exp::Var(nm_Z));
+        let var_eq = al.alloc(Exp::Var(nm_eq));
+        let var_nat = al.alloc(Exp::Var(nm_nat));
+        let var_type = al.alloc(Exp::Var(nm_type));
+        let var_x = al.alloc(Exp::Var(nm_x));
+        let var_y = al.alloc(Exp::Var(nm_y));
 
         #[rustfmt::skip]
         let decl = {
@@ -514,90 +374,82 @@ mod test {
             // (x : A)
             let param_x = Param { name: nm_x, ty: var_A };
             // A -> type
-            let exp_arr_A_type = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, var_type)));
+            let exp_arr_A_type = al.alloc(Exp::Arr(Arrow::unnamed(var_A, var_type)));
             // (==) A x x
-            let exp_x_eq_x = pt.alloc_exp(Exp::App(var_eq, var_A));
-            let exp_x_eq_x = pt.alloc_exp(Exp::App(exp_x_eq_x, var_x));
-            let exp_x_eq_x = pt.alloc_exp(Exp::App(exp_x_eq_x, var_x));
+            let exp_x_eq_x = al.alloc(Exp::App(var_eq, var_A));
+            let exp_x_eq_x = al.alloc(Exp::App(exp_x_eq_x, var_x));
+            let exp_x_eq_x = al.alloc(Exp::App(exp_x_eq_x, var_x));
             // (==) (A : type) (x : A) : A -> type
-            let sig_eq = pt.alloc_sig(Sig {
+            let sig_eq = al.alloc(Sig {
                 name: nm_eq,
-                params: vec![param_A, param_x],
+                params: al.alloc_slice_copy(&[param_A, param_x]),
                 ret_ty: exp_arr_A_type,
             });
             // refl : (==) A x x
-            let sig_refl = pt.alloc_sig(Sig {
+            let sig_refl = al.alloc(Sig {
                 name: nm_refl,
-                params: vec![],
+                params: &[],
                 ret_ty: exp_x_eq_x,
             });
             // data (==) {...}
-            pt.alloc_decl(Decl::Data {
+            al.alloc(Decl::Data {
                 loc_data: loc,
                 sig: sig_eq,
-                ctors: vec![sig_refl],
+                ctors: std::slice::from_ref(al.alloc(&*sig_refl)),
             })
         };
 
         assert_eq!(
-            pt.display_decl(decl).to_string(),
+            format!("{decl}"),
             "data (==) (A : type) (x : A) : A -> type { refl : (==) A x x; };",
         );
 
         let exp = {
-            let exp_x_x = pt.alloc_exp(Exp::App(var_x, var_x));
-            let exp_y_y = pt.alloc_exp(Exp::App(var_y, var_y));
-            let exp_app = pt.alloc_exp(Exp::App(exp_x_x, exp_y_y));
-            let exp_fn_y = pt.alloc_exp(Exp::Lam(Lambda::untyped(nm_y, exp_app)));
+            let exp_x_x = al.alloc(Exp::App(var_x, var_x));
+            let exp_y_y = al.alloc(Exp::App(var_y, var_y));
+            let exp_app = al.alloc(Exp::App(exp_x_x, exp_y_y));
+            let exp_fn_y = al.alloc(Exp::Lam(Lambda::untyped(nm_y, exp_app)));
             let par_x_nat = Param {
                 name: nm_x,
                 ty: var_nat,
             };
-            let exp_fn_x = pt.alloc_exp(Exp::Lam(Lambda::typed(par_x_nat, exp_fn_y)));
+            let exp_fn_x = al.alloc(Exp::Lam(Lambda::typed(par_x_nat, exp_fn_y)));
             exp_fn_x
         };
 
-        assert_eq!(
-            pt.display_exp(exp).to_string(),
-            "fn (x : nat) => fn y => x x (y y)"
-        );
+        assert_eq!(format!("{exp}"), "fn (x : nat) => fn y => x x (y y)");
 
         let decl = {
-            let app_S_Z = pt.alloc_exp(Exp::App(var_S, var_Z));
+            let app_S_Z = al.alloc(Exp::App(var_S, var_Z));
             let par_x_B = Param {
                 name: nm_x,
                 ty: var_B,
             };
-            let arr_B_C = pt.alloc_exp(Exp::Arr(Arrow::named(par_x_B, var_C)));
-            let arr_A_B_C = pt.alloc_exp(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
-            pt.alloc_decl(Decl::Assert {
+            let arr_B_C = al.alloc(Exp::Arr(Arrow::named(par_x_B, var_C)));
+            let arr_A_B_C = al.alloc(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
+            al.alloc(Decl::Assert {
                 loc_assert: loc,
                 exp: app_S_Z,
                 ty: arr_A_B_C,
             })
         };
 
-        assert_eq!(
-            pt.display_decl(decl).to_string(),
-            "assert S Z : A -> (x : B) -> C;"
-        );
+        assert_eq!(format!("{decl}"), "assert S Z : A -> (x : B) -> C;");
 
         let exp = {
-            let exp_S_y = pt.alloc_exp(Exp::App(var_S, var_y));
-            let exp_S_S_y = pt.alloc_exp(Exp::App(var_S, exp_S_y));
-            let pat_Z = pt.alloc_pat(Pat::Var(nm_Z));
-            let pat_S = pt.alloc_pat(Pat::Var(nm_S));
-            let pat_y = pt.alloc_pat(Pat::Var(nm_y));
-            let pat_S_y = pt.alloc_pat(Pat::App(pat_S, pat_y));
-            pt.alloc_exp(Exp::Mat(Match {
+            let exp_S_y = al.alloc(Exp::App(var_S, var_y));
+            let exp_S_S_y = al.alloc(Exp::App(var_S, exp_S_y));
+            let pat_Z = al.alloc(Pat::Var(nm_Z));
+            let pat_S = al.alloc(Pat::Var(nm_S));
+            let pat_y = al.alloc(Pat::Var(nm_y));
+            let pat_S_y = al.alloc(Pat::App(pat_S, pat_y));
+            let cases = [(&*pat_Z, &*var_Z), (&*pat_S_y, &*exp_S_S_y)];
+            al.alloc(Exp::Mat(Match {
                 subject: var_x,
-                cases: vec![(pat_Z, var_Z), (pat_S_y, exp_S_S_y)],
+                cases: al.alloc_slice_copy(&cases),
             }))
         };
 
-        assert_eq!(
-            pt.display_exp(exp).to_string(),
-            "match x { Z => Z; S y => S (S y); }"
-        );
+        assert_eq!(format!("{exp}"), "match x { Z => Z; S y => S (S y); }");
     }
 }

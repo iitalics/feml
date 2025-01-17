@@ -1,6 +1,5 @@
 use crate::core_syntax as stx;
 use crate::parse_tree as pst;
-use crate::parse_tree::{ExpHnd, Name};
 use crate::token::Loc;
 
 use std::collections::HashMap;
@@ -12,8 +11,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Context<'p, 's> {
-    parse_tree: &'p pst::ParseTree<'s>,
+pub struct Context<'s> {
     env: HashMap<&'s str, usize>,
     depth: usize,
 }
@@ -26,26 +24,25 @@ fn look_up_in_global_env(x: &str) -> Option<stx::Constant> {
     }
 }
 
-impl<'p, 's> Context<'p, 's> {
-    pub fn new(parse_tree: &'p pst::ParseTree<'s>) -> Self {
+impl<'s> Context<'s> {
+    pub fn new() -> Self {
         Self {
-            parse_tree,
             env: HashMap::with_capacity(32),
             depth: 0,
         }
     }
 
-    pub fn elab_exp(&mut self, exp: ExpHnd) -> Result<Box<stx::Exp<'s>>> {
-        match self.parse_tree.view_exp(exp) {
+    pub fn elab_exp(&mut self, exp: &pst::Exp<'s, '_>) -> Result<Box<stx::Exp<'s>>> {
+        match exp {
             pst::Exp::Var(x) => self.lookup(*x).map(Box::new),
-            pst::Exp::App(fun, arg) => self.elab_app(*fun, *arg).map(Box::new),
-            pst::Exp::Lam(lam) => self.elab_lam(lam.name, lam.body).map(Box::new),
+            pst::Exp::App(fun, arg) => self.elab_app(fun, arg).map(Box::new),
+            pst::Exp::Lam(lam) => self.elab_lam(lam).map(Box::new),
             pst::Exp::Arr { .. } => unimplemented!("elab Arr"),
             pst::Exp::Mat { .. } => unimplemented!("elab Mat"),
         }
     }
 
-    fn lookup(&self, name: Name<'s>) -> Result<stx::Exp<'s>> {
+    fn lookup(&self, name: pst::Name<'s>) -> Result<stx::Exp<'s>> {
         if let Some(&lvl) = self.env.get(&name.id) {
             let idx = self.depth - lvl - 1;
             return Ok(stx::Exp::Var(idx));
@@ -69,16 +66,16 @@ impl<'p, 's> Context<'p, 's> {
         }
     }
 
-    fn elab_app(&mut self, fun: ExpHnd, arg: ExpHnd) -> Result<stx::Exp<'s>> {
+    fn elab_app(&mut self, fun: &pst::Exp<'s, '_>, arg: &pst::Arg<'s, '_>) -> Result<stx::Exp<'s>> {
         let fun_stx = self.elab_exp(fun)?;
         let arg_stx = self.elab_exp(arg)?;
         Ok(stx::Exp::App(fun_stx, arg_stx))
     }
 
-    fn elab_lam(&mut self, name: Name<'s>, body: ExpHnd) -> Result<stx::Exp<'s>> {
-        let id = name.id;
+    fn elab_lam(&mut self, lam: &pst::Lambda<'s, '_>) -> Result<stx::Exp<'s>> {
+        let id = lam.name.id;
         let prev = self.bind(id);
-        let body_stx_result = self.elab_exp(body);
+        let body_stx_result = self.elab_exp(lam.body);
         self.unbind(id, prev);
         Ok(stx::Exp::Abs(id, body_stx_result?))
     }

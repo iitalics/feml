@@ -1,9 +1,9 @@
 use std::fmt;
 use std::mem;
 
-use crate::parse_tree::{Arrow, Exp, Lambda, Match, MatchCase, Pat};
-use crate::parse_tree::{Decl, Name, Param, ParseTree, Sig};
-use crate::parse_tree::{ExpHnd, PatHnd, SigHnd, TyHnd};
+use crate::parse_tree;
+use crate::parse_tree::{Arrow, Exp, Lambda, Match, MatchCase, Pat, Ty};
+use crate::parse_tree::{Decl, Name, Param, Sig};
 use crate::token::{Keyword, Loc, Token};
 
 #[derive(Debug)]
@@ -80,33 +80,34 @@ impl Prec {
 enum Op<'i> {
     // arrow operator (a -> b)
     Arrow,
-    // named operator (a * b)
+    // named operator (a <*> b)
     Name(Name<'i>),
 }
 
-pub struct Parser<'i> {
-    parse_tree: ParseTree<'i>,
-    state: S<'i>,
+pub struct Parser<'i, 'a> {
+    ptal: &'a parse_tree::Allocator,
+    decls: Vec<&'a Decl<'i, 'a>>,
+    state: S<'i, 'a>,
     reduce_name: Vec<RName>,
     reduce_sig: Vec<RSig>,
-    reduce_exp: Vec<RExp<'i>>,
+    reduce_exp: Vec<RExp<'i, 'a>>,
     reduce_param: Vec<RParam<'i>>,
-    reduce_pat: Vec<RPat>,
-    reduce_match_case: Vec<RMatchCase>,
-    param_list_stack: Vec<Vec<Param<'i>>>,
-    match_case_stack: Vec<Vec<MatchCase>>,
+    reduce_pat: Vec<RPat<'i, 'a>>,
+    reduce_match_case: Vec<RMatchCase<'i, 'a>>,
+    param_list_stack: Vec<Vec<Param<'i, 'a>>>,
+    match_case_stack: Vec<Vec<MatchCase<'i, 'a>>>,
 }
 
 // parser state
-enum S<'i> {
+enum S<'i, 'a> {
     Error,
     Top,
     Def,
-    DefEq(Loc, SigHnd),
-    DefSm(Loc, SigHnd, TyHnd),
+    DefEq(Loc, &'a Sig<'i, 'a>),
+    DefSm(Loc, &'a Sig<'i, 'a>, &'a Ty<'i, 'a>),
     Assert,
-    AssertCl(Loc, ExpHnd),
-    AssertSm(Loc, ExpHnd, TyHnd),
+    AssertCl(Loc, &'a Exp<'i, 'a>),
+    AssertSm(Loc, &'a Exp<'i, 'a>, &'a Ty<'i, 'a>),
     Name,
     NameOp(Loc),
     NameOpRP(Name<'i>),
@@ -115,32 +116,32 @@ enum S<'i> {
     Param,
     ParamName,
     ParamCl(Name<'i>),
-    ParamRP(Name<'i>, TyHnd),
+    ParamRP(Name<'i>, &'a Ty<'i, 'a>),
     Exp,
     Infix(Prec),
-    InfixOp(Prec, ExpHnd),
+    InfixOp(Prec, &'a Exp<'i, 'a>),
     App,
-    AppArg(ExpHnd),
+    AppArg(&'a Exp<'i, 'a>),
     Term,
     TermLP(Loc),
-    TermRP(ExpHnd),
+    TermRP(&'a Exp<'i, 'a>),
     InfixMaybeParamId(Prec, Loc),
     InfixMaybeParamCl(Prec, Name<'i>),
-    InfixArrowAr(Prec, Param<'i>),
+    InfixArrowAr(Prec, Param<'i, 'a>),
     Lam,
     LamParam,
     LamUntypedAr(Name<'i>),
-    LamTypedAr(Param<'i>),
+    LamTypedAr(Param<'i, 'a>),
     Match,
-    MatchLC(ExpHnd),
-    MatchCases(ExpHnd),
-    CaseRr(PatHnd),
-    CaseSm(PatHnd, ExpHnd),
+    MatchLC(&'a Exp<'i, 'a>),
+    MatchCases(&'a Exp<'i, 'a>),
+    CaseRr(&'a Pat<'i, 'a>),
+    CaseSm(&'a Pat<'i, 'a>, &'a Exp<'i, 'a>),
     Pat,
-    PatAppArg(PatHnd),
+    PatAppArg(&'a Pat<'i, 'a>),
     PatTerm,
     PatTermLP(Loc),
-    PatTermRP(PatHnd),
+    PatTermRP(&'a Pat<'i, 'a>),
 }
 
 // parser reduction for Name type
@@ -164,39 +165,40 @@ enum RParam<'i> {
 }
 
 // parser reduction for Exp type
-enum RExp<'i> {
-    DefSm(Loc, SigHnd),
+enum RExp<'i, 'a> {
+    DefSm(Loc, &'a Sig<'i, 'a>),
     AssertCl(Loc),
-    AssertSm(Loc, ExpHnd),
+    AssertSm(Loc, &'a Exp<'i, 'a>),
     Sig(Name<'i>),
     ParamRP(Name<'i>),
     InfixOp(Prec),
-    InfixOpApply(Prec, ExpHnd, Op<'i>),
+    InfixOpApply(Prec, &'a Exp<'i, 'a>, Op<'i>),
     AppArg,
-    AppApply(ExpHnd),
+    AppApply(&'a Exp<'i, 'a>),
     TermRP,
-    InfixArrowApply(Prec, Param<'i>),
+    InfixArrowApply(Prec, Param<'i, 'a>),
     LamUntyped(Name<'i>),
-    LamTyped(Param<'i>),
+    LamTyped(Param<'i, 'a>),
     MatchLC,
-    CaseSm(PatHnd),
+    CaseSm(&'a Pat<'i, 'a>),
 }
 
-enum RPat {
+enum RPat<'i, 'a> {
     CaseRr,
     PatAppArg,
-    PatAppApply(PatHnd),
+    PatAppApply(&'a Pat<'i, 'a>),
     PatTermRP,
 }
 
-enum RMatchCase {
-    MatchCases(ExpHnd),
+enum RMatchCase<'i, 'a> {
+    MatchCases(&'a Exp<'i, 'a>),
 }
 
-impl<'i> Parser<'i> {
-    pub fn new() -> Self {
+impl<'i, 'a> Parser<'i, 'a> {
+    pub fn new(allocator: &'a parse_tree::Allocator) -> Self {
         Self {
-            parse_tree: ParseTree::new(),
+            ptal: allocator,
+            decls: vec![],
             state: S::Top,
             reduce_name: vec![],
             reduce_sig: vec![],
@@ -247,11 +249,12 @@ impl<'i> Parser<'i> {
                 },
                 S::AssertSm(loc_assert, exp, ty) => match t {
                     Token::Sm => {
-                        self.parse_tree.alloc_decl(Decl::Assert {
+                        let decl = self.ptal.alloc(Decl::Assert {
                             loc_assert,
                             exp,
                             ty,
                         });
+                        self.decls.push(decl);
                         self.state = S::Top;
                         break;
                     }
@@ -278,7 +281,8 @@ impl<'i> Parser<'i> {
                 },
                 S::DefSm(loc_def, sig, body) => match t {
                     Token::Sm => {
-                        self.parse_tree.alloc_decl(Decl::Def { loc_def, sig, body });
+                        let decl = self.ptal.alloc(Decl::Def { loc_def, sig, body });
+                        self.decls.push(decl);
                         self.state = S::Top;
                         break;
                     }
@@ -602,8 +606,9 @@ impl<'i> Parser<'i> {
                 S::MatchCases(subject) => match t {
                     Token::RC => {
                         let cases = self.match_case_stack.pop().unwrap();
+                        let cases = self.ptal.alloc_slice_copy(&cases);
                         let mtch = Match { subject, cases };
-                        let mat = self.parse_tree.alloc_exp(Exp::Mat(mtch));
+                        let mat = self.ptal.alloc(Exp::Mat(mtch));
                         self.reduce_exp(mat);
                         break;
                     }
@@ -663,7 +668,7 @@ impl<'i> Parser<'i> {
                         break;
                     }
                     Token::Kw(Keyword::Wildcard) => {
-                        let any = self.parse_tree.alloc_pat(Pat::Any(loc));
+                        let any = self.ptal.alloc(Pat::Any(loc));
                         self.reduce_pat(any);
                         break;
                     }
@@ -693,10 +698,10 @@ impl<'i> Parser<'i> {
         Ok(())
     }
 
-    pub fn end_of_file(self, loc: Loc) -> Result<ParseTree<'i>, Error> {
+    pub fn end_of_file(self, loc: Loc) -> Result<Vec<&'a Decl<'a, 'i>>, Error> {
         match self.state {
             S::Error => panic!("cannot process EOF in error state"),
-            S::Top => Ok(self.parse_tree),
+            S::Top => Ok(self.decls),
             _ => Err(Error::UnexpectedEOF(loc)),
         }
     }
@@ -706,23 +711,23 @@ impl<'i> Parser<'i> {
             RName::SigParams => self.state = S::SigParams(name),
             RName::LamUntypedAr => self.state = S::LamUntypedAr(name),
             RName::ExpVar => {
-                let var = self.parse_tree.alloc_exp(Exp::Var(name));
+                let var = self.ptal.alloc(Exp::Var(name));
                 self.reduce_exp(var);
             }
             RName::PatVar => {
-                let var = self.parse_tree.alloc_pat(Pat::Var(name));
+                let var = self.ptal.alloc(Pat::Var(name));
                 self.reduce_pat(var);
             }
         }
     }
 
-    fn reduce_sig(&mut self, sig: SigHnd) {
+    fn reduce_sig(&mut self, sig: &'a Sig<'i, 'a>) {
         match self.reduce_sig.pop().unwrap() {
             RSig::DefEq(loc) => self.state = S::DefEq(loc, sig),
         }
     }
 
-    fn reduce_exp(&mut self, exp: ExpHnd) {
+    fn reduce_exp(&mut self, exp: &'a Exp<'i, 'a>) {
         match self.reduce_exp.pop().unwrap() {
             RExp::DefSm(loc, sig) => self.state = S::DefSm(loc, sig, exp),
             RExp::AssertCl(loc) => self.state = S::AssertCl(loc, exp),
@@ -735,7 +740,8 @@ impl<'i> Parser<'i> {
             RExp::CaseSm(pat) => self.state = S::CaseSm(pat, exp),
             RExp::Sig(name) => {
                 let params = self.param_list_stack.pop().unwrap();
-                let sig = self.parse_tree.alloc_sig(Sig {
+                let params = self.ptal.alloc_slice_copy(&params);
+                let sig = self.ptal.alloc(Sig {
                     name,
                     params,
                     ret_ty: exp,
@@ -747,42 +753,42 @@ impl<'i> Parser<'i> {
                     Op::Arrow => {
                         // lhs -> exp
                         let arrow = Arrow::unnamed(lhs, exp);
-                        self.parse_tree.alloc_exp(Exp::Arr(arrow))
+                        self.ptal.alloc(Exp::Arr(arrow))
                     }
                     Op::Name(op) => {
                         // ((op lhs) exp)
-                        let fun = self.parse_tree.alloc_exp(Exp::Var(op));
-                        let app = self.parse_tree.alloc_exp(Exp::App(fun, lhs));
-                        self.parse_tree.alloc_exp(Exp::App(app, exp))
+                        let fun = self.ptal.alloc(Exp::Var(op));
+                        let app = self.ptal.alloc(Exp::App(fun, lhs));
+                        self.ptal.alloc(Exp::App(app, exp))
                     }
                 };
                 self.state = S::InfixOp(prec, app);
             }
             RExp::AppApply(head) => {
-                let app = self.parse_tree.alloc_exp(Exp::App(head, exp));
+                let app = self.ptal.alloc(Exp::App(head, exp));
                 self.state = S::AppArg(app);
             }
             RExp::InfixArrowApply(prec, param) => {
                 // (name : ty) -> exp
                 let arrow = Arrow::named(param, exp);
-                let arr = self.parse_tree.alloc_exp(Exp::Arr(arrow));
+                let arr = self.ptal.alloc(Exp::Arr(arrow));
                 self.state = S::InfixOp(prec, arr);
             }
             RExp::LamUntyped(name) => {
                 let lambda = Lambda::untyped(name, exp);
-                let lam = self.parse_tree.alloc_exp(Exp::Lam(lambda));
+                let lam = self.ptal.alloc(Exp::Lam(lambda));
                 // TODO: turn tail call into loop
                 self.reduce_exp(lam);
             }
             RExp::LamTyped(param) => {
                 let lambda = Lambda::typed(param, exp);
-                let lam = self.parse_tree.alloc_exp(Exp::Lam(lambda));
+                let lam = self.ptal.alloc(Exp::Lam(lambda));
                 self.reduce_exp(lam);
             }
         }
     }
 
-    fn reduce_param(&mut self, param: Param<'i>) {
+    fn reduce_param(&mut self, param: Param<'i, 'a>) {
         match self.reduce_param.pop().unwrap() {
             RParam::InfixArrowAr(prec) => self.state = S::InfixArrowAr(prec, param),
             RParam::LamTypedAr => self.state = S::LamTypedAr(param),
@@ -794,19 +800,19 @@ impl<'i> Parser<'i> {
         }
     }
 
-    fn reduce_pat(&mut self, pat: PatHnd) {
+    fn reduce_pat(&mut self, pat: &'a Pat<'i, 'a>) {
         match self.reduce_pat.pop().unwrap() {
             RPat::CaseRr => self.state = S::CaseRr(pat),
             RPat::PatTermRP => self.state = S::PatTermRP(pat),
             RPat::PatAppArg => self.state = S::PatAppArg(pat),
             RPat::PatAppApply(head) => {
-                let app = self.parse_tree.alloc_pat(Pat::App(head, pat));
+                let app = self.ptal.alloc(Pat::App(head, pat));
                 self.state = S::PatAppArg(app);
             }
         }
     }
 
-    fn reduce_match_case(&mut self, case: MatchCase) {
+    fn reduce_match_case(&mut self, case: MatchCase<'i, 'a>) {
         match self.reduce_match_case.pop().unwrap() {
             RMatchCase::MatchCases(subject) => {
                 let cases = self.match_case_stack.last_mut().unwrap();
@@ -824,13 +830,13 @@ mod test {
 
     #[test]
     fn test_needs_drop() {
-        assert!(!std::mem::needs_drop::<S<'_>>());
+        assert!(!std::mem::needs_drop::<S<'_, '_>>());
         assert!(!std::mem::needs_drop::<RName>());
         assert!(!std::mem::needs_drop::<RSig>());
-        assert!(!std::mem::needs_drop::<RExp<'_>>());
+        assert!(!std::mem::needs_drop::<RExp<'_, '_>>());
         assert!(!std::mem::needs_drop::<RParam<'_>>());
-        assert!(!std::mem::needs_drop::<RPat>());
-        assert!(!std::mem::needs_drop::<RMatchCase>());
+        assert!(!std::mem::needs_drop::<RPat<'_, '_>>());
+        assert!(!std::mem::needs_drop::<RMatchCase<'_, '_>>());
     }
 
     #[test]
@@ -854,17 +860,17 @@ def twice (n : nat) : nat = match n {
 assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 ";
 
-        let mut prs = Parser::new();
+        let ptal = parse_tree::allocator();
+        let mut prs = Parser::new(&ptal);
         let mut tkz = Tokenizer::new(INPUT);
         for r in &mut tkz {
             let (loc, t) = r.unwrap();
             prs.feed(loc, t).unwrap();
         }
-        let tree = prs.end_of_file(tkz.loc()).unwrap();
-        let decls = tree.decls();
+        let decls = prs.end_of_file(tkz.loc()).unwrap();
 
         assert_eq!(
-            tree.display_decl(decls[0]).to_string(),
+            format!("{}", decls[0]),
             "
 def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) ((+) y w) z);
 "
@@ -872,7 +878,7 @@ def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) 
         );
 
         assert_eq!(
-            tree.display_decl(decls[1]).to_string(),
+            format!("{}", decls[1]),
             "
 def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
 "
@@ -880,7 +886,7 @@ def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
         );
 
         assert_eq!(
-            tree.display_decl(decls[2]).to_string(),
+            format!("{}", decls[2]),
             "
 def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
 "
@@ -888,7 +894,7 @@ def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
         );
 
         assert_eq!(
-            tree.display_decl(decls[3]).to_string(),
+            format!("{}", decls[3]),
             "
 assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 "
