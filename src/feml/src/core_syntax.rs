@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
@@ -12,6 +13,44 @@ pub enum Exp<'s> {
     Var(usize),
     App(Box<Exp<'s>>, Box<Exp<'s>>),
     Abs(&'s str, Box<Exp<'s>>),
+}
+
+#[derive(Clone, Debug)]
+pub enum Ty {
+    Nat,
+    Arr(Type, Type),
+}
+
+pub type Type = Rc<Ty>;
+
+impl Ty {
+    pub fn compatible(&self, mut rhs: &Ty) -> bool {
+        let mut lhs = self;
+        loop {
+            match lhs {
+                Ty::Nat => break matches!(rhs, Ty::Nat),
+                Ty::Arr(lhs_dom, lhs_rng) => match rhs {
+                    Ty::Arr(rhs_dom, rhs_rng) => {
+                        if !rhs_dom.compatible(lhs_dom) {
+                            break false;
+                        }
+                        lhs = &lhs_rng;
+                        rhs = &rhs_rng;
+                    }
+                    _ => break false,
+                },
+            }
+        }
+    }
+}
+
+impl Constant {
+    pub fn get_type(&self) -> Type {
+        match self {
+            Constant::Z => Type::new(Ty::Nat),
+            Constant::S => Type::new(Ty::Arr(Type::new(Ty::Nat), Type::new(Ty::Nat))),
+        }
+    }
 }
 
 // == Pretty printing ==
@@ -79,5 +118,35 @@ impl<'s> ExpDisplayContext<'s> {
 impl fmt::Display for Exp<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ExpDisplayContext::new().fmt(f, self, 0)
+    }
+}
+
+pub struct DisplayTy<'t> {
+    ty: &'t Ty,
+    prec: u32,
+}
+
+impl Ty {
+    pub fn display_prec(&self, prec: u32) -> DisplayTy<'_> {
+        DisplayTy { ty: self, prec }
+    }
+}
+
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.display_prec(0).fmt(f)
+    }
+}
+
+impl fmt::Display for DisplayTy<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty {
+            Ty::Nat => write!(f, "nat"),
+            Ty::Arr(dom, rng) => {
+                open(f, self.prec, 1)?;
+                write!(f, "{} -> {}", dom.display_prec(2), rng.display_prec(1))?;
+                close(f, self.prec, 1)
+            }
+        }
     }
 }

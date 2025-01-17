@@ -12,8 +12,8 @@ pub enum Val<'e> {
 impl fmt::Display for Val<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Nat(n) => write!(f, "nat({})", *n),
-            Self::Abs { .. } | Self::S => write!(f, "(fun)"),
+            Self::Nat(n) => write!(f, "{n}"),
+            Self::Abs { .. } | Self::S => write!(f, "[fun]"),
         }
     }
 }

@@ -97,14 +97,33 @@ pub enum Exp<'s, 'a> {
     Mat(Match<'s, 'a>),
 }
 
+impl Exp<'_, '_> {
+    pub fn loc(&self) -> Loc {
+        let mut this = self;
+        loop {
+            match this {
+                Exp::Var(name) => break name.loc,
+                Exp::App(fun, _) => this = fun,
+                Exp::Arr(arr) => match arr.param {
+                    //Some(p) => break p.loc_lp,
+                    Some(p) => break p.name.loc,
+                    None => this = arr.dom,
+                },
+                Exp::Lam(lam) => break lam.loc(),
+                //Exp::Mat(mat) => break mat.loc(),
+                Exp::Mat(mat) => this = mat.subject,
+            }
+        }
+    }
+}
+
 pub type Ty<'s, 'a> = Exp<'s, 'a>;
 
 // TODO: named/explicit args
 pub type Arg<'s, 'a> = Exp<'s, 'a>;
 
 /// Arrow types.
-// x -> u
-// (x : t) -> u
+// x -> u, (x : t) -> u
 #[derive(Copy, Clone)]
 pub struct Arrow<'s, 'a> {
     // note: dom is redundant if param is not None
@@ -144,6 +163,11 @@ pub struct Lambda<'s, 'a> {
 }
 
 impl<'s, 'a> Lambda<'s, 'a> {
+    pub fn loc(&self) -> Loc {
+        //self.loc_fn,
+        self.name.loc
+    }
+
     pub fn untyped(name: Name<'s>, body: &'a Exp<'s, 'a>) -> Self {
         Self {
             name,

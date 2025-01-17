@@ -3,20 +3,51 @@ use crate::parse_tree as pst;
 use crate::token::Loc;
 
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
     NotDefined(Loc, String),
+    TypeMismatch(Loc, String, String),
+    TypeNotArrow(Loc, String),
+    NoLambdaInfer(Loc, String),
+}
+
+impl Error {
+    pub fn loc(&self) -> Loc {
+        match self {
+            Self::NotDefined(loc, _)
+            | Self::TypeMismatch(loc, _, _)
+            | Self::TypeNotArrow(loc, _)
+            | Self::NoLambdaInfer(loc, _) => *loc,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotDefined(_, x) => write!(f, "{x} not defined"),
+            Self::TypeMismatch(_, t, s) => write!(f, "expected {t}, got {s}"),
+            Self::TypeNotArrow(_, s) => write!(f, "expected function type, got {s}"),
+            Self::NoLambdaInfer(_, id) => write!(f, "unable to infer type for {id}"),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Context<'s> {
-    // maps binding names to (scope_depth - debruijn_index). this value is stable as new
+    scope: HashMap<&'s str, Binding>,
+    scope_depth: usize,
+}
+
+struct Binding {
+    // a binding level (scope_depth - debruijn_index). this value is stable as new
     // bindings are introduced and can be used to obtain the correct debruijn index by
     // subtracting from scope_depth again.
-    scope: HashMap<&'s str, usize>,
-    scope_depth: usize,
+    level: usize,
+    ty: stx::Type,
 }
 
 fn look_up_in_global_env(x: &str) -> Option<stx::Constant> {
@@ -35,50 +66,127 @@ impl<'s> Context<'s> {
         }
     }
 
-    pub fn elab_exp(&mut self, exp: &pst::Exp<'s, '_>) -> Result<Box<stx::Exp<'s>>> {
+    pub fn elab_exp_infer(
+        &mut self,
+        exp: &pst::Exp<'s, '_>,
+    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
         match exp {
-            pst::Exp::Var(x) => self.lookup(*x).map(Box::new),
-            pst::Exp::App(fun, arg) => self.elab_app(fun, arg).map(Box::new),
-            pst::Exp::Lam(lam) => self.elab_lam(lam).map(Box::new),
+            pst::Exp::Var(x) => self.lookup(*x),
+            pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
+            pst::Exp::Lam(lam) => self.elab_lam_infer(lam),
             pst::Exp::Arr { .. } => unimplemented!("elab Arr"),
             pst::Exp::Mat { .. } => unimplemented!("elab Mat"),
         }
     }
 
-    fn lookup(&self, name: pst::Name<'s>) -> Result<stx::Exp<'s>> {
-        if let Some(&lvl) = self.scope.get(&name.id) {
-            let idx = self.scope_depth - lvl;
-            return Ok(stx::Exp::Var(idx));
-        }
-        match look_up_in_global_env(name.id) {
-            Some(cst) => Ok(stx::Exp::Const(cst)),
-            None => Err(Error::NotDefined(name.loc, name.id.to_string())),
+    pub fn elab_exp_check(
+        &mut self,
+        exp: &pst::Exp<'s, '_>,
+        ty: &stx::Ty,
+    ) -> Result<Box<stx::Exp<'s>>> {
+        match exp {
+            pst::Exp::Lam(lam) if lam.param.is_none() => self.elab_lam_check(lam, ty),
+            _ => {
+                let (stx, inf_ty) = self.elab_exp_infer(exp)?;
+                if !inf_ty.compatible(ty) {
+                    return Err(Error::TypeMismatch(
+                        exp.loc(),
+                        ty.to_string(),
+                        inf_ty.to_string(),
+                    ));
+                }
+                Ok(stx)
+            }
         }
     }
 
-    fn bind(&mut self, id: &'s str) -> Option<usize> {
+    fn elab_app_infer(
+        &mut self,
+        fun: &pst::Exp<'s, '_>,
+        arg: &pst::Arg<'s, '_>,
+    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+        let (fun_stx, fun_ty) = self.elab_exp_infer(fun)?;
+        let (arg_ty, ret_ty) = match &*fun_ty {
+            stx::Ty::Arr(dom, rng) => (dom, rng),
+            _ => return Err(Error::TypeNotArrow(fun.loc(), fun_ty.to_string())),
+        };
+        let arg_stx = self.elab_exp_check(arg, arg_ty)?;
+        Ok((Box::new(stx::Exp::App(fun_stx, arg_stx)), ret_ty.clone()))
+    }
+
+    fn elab_lam_infer(
+        &mut self,
+        lam: &pst::Lambda<'s, '_>,
+    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+        let _arg_ty = match lam.param {
+            Some(_) => todo!("convert exp to type"),
+            None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
+        };
+        // let (body_stx, body_ty) = {
+        //     let prev = self.bind(arg_id, arg_ty.clone());
+        //     let result = self.elab_exp_infer(&lam.body);
+        //     self.unbind(arg_id, prev);
+        //     result?
+        // };
+    }
+
+    fn elab_lam_check(
+        &mut self,
+        lam: &pst::Lambda<'s, '_>,
+        ty: &stx::Ty,
+    ) -> Result<Box<stx::Exp<'s>>> {
+        let arg_id = lam.name.id;
+        match lam.param {
+            Some(_) => todo!("convert exp to type"),
+            None => {}
+        }
+        let (arg_ty, ret_ty) = match ty {
+            stx::Ty::Arr(dom, rng) => (dom, rng),
+            _ => return Err(Error::TypeNotArrow(lam.loc(), ty.to_string())),
+        };
+        let body_stx = {
+            let prev = self.bind(arg_id, arg_ty.clone());
+            let result = self.elab_exp_check(&lam.body, ret_ty);
+            self.unbind(arg_id, prev);
+            result?
+        };
+        Ok(Box::new(stx::Exp::Abs(arg_id, body_stx)))
+    }
+
+    fn lookup(&self, name: pst::Name<'s>) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+        if let Some(binding) = self.scope.get(&name.id) {
+            let idx = self.scope_depth - binding.level;
+            let var = Box::new(stx::Exp::Var(idx));
+            let ty = binding.ty.clone();
+            return Ok((var, ty));
+        }
+
+        if let Some(c) = look_up_in_global_env(name.id) {
+            // Some(cst) => Ok(stx::Exp::Const(cst)),
+            // None => ,
+            let cst = Box::new(stx::Exp::Const(c));
+            let ty = c.get_type();
+            return Ok((cst, ty));
+        }
+
+        Err(Error::NotDefined(name.loc, name.id.to_string()))
+    }
+
+    fn bind(&mut self, id: &'s str, ty: stx::Type) -> Option<Binding> {
         self.scope_depth += 1;
-        self.scope.insert(id, self.scope_depth)
+        self.scope.insert(
+            id,
+            Binding {
+                level: self.scope_depth,
+                ty,
+            },
+        )
     }
 
-    fn unbind(&mut self, id: &'s str, prev: Option<usize>) {
+    fn unbind(&mut self, id: &'s str, prev: Option<Binding>) {
         self.scope_depth -= 1;
-        if let Some(prev_lvl) = prev {
-            self.scope.insert(id, prev_lvl);
+        if let Some(prev_binding) = prev {
+            self.scope.insert(id, prev_binding);
         }
-    }
-
-    fn elab_app(&mut self, fun: &pst::Exp<'s, '_>, arg: &pst::Arg<'s, '_>) -> Result<stx::Exp<'s>> {
-        let fun_stx = self.elab_exp(fun)?;
-        let arg_stx = self.elab_exp(arg)?;
-        Ok(stx::Exp::App(fun_stx, arg_stx))
-    }
-
-    fn elab_lam(&mut self, lam: &pst::Lambda<'s, '_>) -> Result<stx::Exp<'s>> {
-        let id = lam.name.id;
-        let prev = self.bind(id);
-        let body_stx_result = self.elab_exp(lam.body);
-        self.unbind(id, prev);
-        Ok(stx::Exp::Abs(id, body_stx_result?))
     }
 }
