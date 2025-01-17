@@ -33,6 +33,7 @@ pub struct Loc {
     /// Lines from start of input (first line will be `0`).
     pub line: u32,
     /// Column from start of line (beginning of line will be `0`).
+    // FIXME: currently this is bytes from the start of line; determine if that is correct
     pub col: u32,
 }
 
@@ -267,11 +268,11 @@ impl<'i> Tokenizer<'i> {
             if let Some(delim) = char_to_delimiter_token(ch) {
                 (delim, ch_end)
             } else if char_is_operator(ch) {
-                let end = self.offset_while(0, char_is_operator);
+                let end = self.offset_while(ch_end, char_is_operator);
                 let op = &self.input[..end];
                 (operator_to_token(op), end)
             } else if char_is_identifier(ch) {
-                let end = self.offset_while(0, char_is_identifier);
+                let end = self.offset_while(ch_end, char_is_identifier);
                 let id = &self.input[..end];
                 (ident_to_token(id), end)
             } else {
