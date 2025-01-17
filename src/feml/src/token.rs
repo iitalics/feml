@@ -3,8 +3,9 @@
 use core::fmt;
 
 /// Errors that might occur during tokenization.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("encountered invalid character {1:?}")]
     InvalidChar(Loc, char),
 }
 
@@ -12,14 +13,6 @@ impl Error {
     pub fn loc(&self) -> Loc {
         match self {
             Error::InvalidChar(loc, _) => *loc,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::InvalidChar(loc, chr) => write!(f, "invalid char {chr:?} at {loc}"),
         }
     }
 }

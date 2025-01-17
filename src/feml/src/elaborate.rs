@@ -3,14 +3,18 @@ use crate::parse_tree as pst;
 use crate::token::Loc;
 
 use std::collections::HashMap;
-use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{1} not defined")]
     NotDefined(Loc, String),
+    #[error("expected {1}, got {2}")]
     TypeMismatch(Loc, String, String),
+    #[error("expected function type, got {1}")]
     TypeNotArrow(Loc, String),
+    #[error("unable to infer type for {1}")]
     NoLambdaInfer(Loc, String),
+    #[error("invalid type expression: {1}")]
     InvalidType(Loc, String),
 }
 
@@ -22,18 +26,6 @@ impl Error {
             | Self::TypeNotArrow(loc, _)
             | Self::NoLambdaInfer(loc, _)
             | Self::InvalidType(loc, _) => *loc,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotDefined(_, x) => write!(f, "{x} not defined"),
-            Self::TypeMismatch(_, t, s) => write!(f, "expected {t}, got {s}"),
-            Self::TypeNotArrow(_, s) => write!(f, "expected function type, got {s}"),
-            Self::NoLambdaInfer(_, id) => write!(f, "unable to infer type for {id}"),
-            Self::InvalidType(_, e) => write!(f, "invalid type expression {e}"),
         }
     }
 }

@@ -1,4 +1,3 @@
-use std::fmt;
 use std::mem;
 
 use crate::parse_tree;
@@ -6,19 +5,14 @@ use crate::parse_tree::{Arrow, Exp, Lambda, Match, MatchCase, Pat, Ty};
 use crate::parse_tree::{Decl, Name, Param, Sig};
 use crate::token::{Keyword, Loc, Token};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("expected {1}, found {2} instead")]
     Expected(Loc, &'static str, String),
+    #[error("unexpected {1}, was looking for {2}")]
     Unexpected(Loc, String, &'static str),
+    #[error("reached end of file earlier than expected")]
     UnexpectedEOF(Loc),
-}
-
-fn expected(loc: Loc, a: &'static str, b: Token<'_>) -> Error {
-    Error::Expected(loc, a, b.to_string())
-}
-
-fn unexpected(loc: Loc, a: Token<'_>, b: &'static str) -> Error {
-    Error::Unexpected(loc, a.to_string(), b)
 }
 
 impl Error {
@@ -31,15 +25,12 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Expected(_, a, b) => write!(f, "expected {a}, found {b} instead"),
-            Error::Unexpected(_, a, b) => write!(f, "unexpected {a}, was looking for {b}"),
-            // TODO: "unclosed ...?"
-            Error::UnexpectedEOF(_) => write!(f, "reached end of file earlier than expected"),
-        }
-    }
+fn expected(loc: Loc, a: &'static str, b: Token<'_>) -> Error {
+    Error::Expected(loc, a, b.to_string())
+}
+
+fn unexpected(loc: Loc, a: Token<'_>, b: &'static str) -> Error {
+    Error::Unexpected(loc, a.to_string(), b)
 }
 
 // infix operator precedence
