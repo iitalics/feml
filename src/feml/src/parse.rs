@@ -1,7 +1,6 @@
 use std::fmt;
 use std::mem;
 
-use crate::intern::Intern;
 use crate::parse_tree::{Arrow, Exp, Lambda, Match, MatchCase, Pat};
 use crate::parse_tree::{Decl, Name, Param, ParseTree, Sig};
 use crate::parse_tree::{ExpHnd, PatHnd, SigHnd, TyHnd};
@@ -86,7 +85,6 @@ enum Op<'i> {
 }
 
 pub struct Parser<'i> {
-    intern: &'i Intern,
     parse_tree: ParseTree<'i>,
     state: S<'i>,
     reduce_name: Vec<RName>,
@@ -196,9 +194,8 @@ enum RMatchCase {
 }
 
 impl<'i> Parser<'i> {
-    pub fn new(intern: &'i Intern) -> Self {
+    pub fn new() -> Self {
         Self {
-            intern,
             parse_tree: ParseTree::new(),
             state: S::Top,
             reduce_name: vec![],
@@ -212,7 +209,7 @@ impl<'i> Parser<'i> {
         }
     }
 
-    pub fn feed(&mut self, loc: Loc, t: Token<'_>) -> Result<(), Error> {
+    pub fn feed(&mut self, loc: Loc, t: Token<'i>) -> Result<(), Error> {
         loop {
             match mem::replace(&mut self.state, S::Error) {
                 S::Error => panic!("cannot process token in error state"),
@@ -291,8 +288,8 @@ impl<'i> Parser<'i> {
                 // <name> ::=
                 //   <ident> | "(" <oper> ")"
                 S::Name => match t {
-                    Token::Ident(ident) => {
-                        let name = Name::ident(loc, self.intern.intern(ident));
+                    Token::Ident(id) => {
+                        let name = Name::ident(loc, id);
                         self.reduce_name(name);
                         break;
                     }
@@ -305,7 +302,7 @@ impl<'i> Parser<'i> {
                 S::NameOp(loc_lp) => match t {
                     Token::Oper(op) => {
                         // note: "(+)" gets assigned the "(" for its loc, not "+"
-                        let name = Name::operator(loc_lp, self.intern.intern(op));
+                        let name = Name::operator(loc_lp, op);
                         self.state = S::NameOpRP(name);
                         break;
                     }
@@ -352,8 +349,8 @@ impl<'i> Parser<'i> {
                 S::ParamName => match t {
                     // FIXME: currently this only allows params to be <id>, but the BNF
                     // says we should support <name>, ie "def f ((+) : A) ..."
-                    Token::Ident(ident) => {
-                        let name = Name::ident(loc, self.intern.intern(ident));
+                    Token::Ident(id) => {
+                        let name = Name::ident(loc, id);
                         self.state = S::ParamCl(name);
                         break;
                     }
@@ -422,7 +419,7 @@ impl<'i> Parser<'i> {
                         Token::Oper(op) => {
                             let op_prec = Prec::by_name(op);
                             prec.binds_rhs(op_prec).then(|| {
-                                let name = Name::operator(loc, self.intern.intern(op));
+                                let name = Name::operator(loc, op);
                                 (Op::Name(name), op_prec)
                             })
                         }
@@ -499,10 +496,10 @@ impl<'i> Parser<'i> {
 
                 // <infix> ::= ... | <param> "->" <infix>
                 S::InfixMaybeParamId(prec, loc_lp) => match t {
-                    Token::Ident(ident) => {
+                    Token::Ident(id) => {
                         // currently seen "(id" so we have to be prepared for expr of the
                         // form "(id : ty) -> ..."
-                        let name = Name::ident(loc, self.intern.intern(ident));
+                        let name = Name::ident(loc, id);
                         self.state = S::InfixMaybeParamCl(prec, name);
                         break;
                     }
@@ -857,8 +854,7 @@ def twice (n : nat) : nat = match n {
 assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 ";
 
-        let int = Intern::new();
-        let mut prs = Parser::new(&int);
+        let mut prs = Parser::new();
         let mut tkz = Tokenizer::new(INPUT);
         for r in &mut tkz {
             let (loc, t) = r.unwrap();
@@ -868,7 +864,7 @@ assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
         let decls = tree.decls();
 
         assert_eq!(
-            tree.display_decl(&int, decls[0]).to_string(),
+            tree.display_decl(decls[0]).to_string(),
             "
 def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) ((+) y w) z);
 "
@@ -876,7 +872,7 @@ def f : (Q : A -> type) -> (x : A) -> (==) P Q -> (==) (P x) (Q x) = (+) x ((*) 
         );
 
         assert_eq!(
-            tree.display_decl(&int, decls[1]).to_string(),
+            tree.display_decl(decls[1]).to_string(),
             "
 def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
 "
@@ -884,7 +880,7 @@ def const (A : type) (B : type) : A -> B -> A = fn x => fn (y : B) => x;
         );
 
         assert_eq!(
-            tree.display_decl(&int, decls[2]).to_string(),
+            tree.display_decl(decls[2]).to_string(),
             "
 def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
 "
@@ -892,7 +888,7 @@ def twice (n : nat) : nat = match n { Z => Z; S n' => S (S (twice n')); };
         );
 
         assert_eq!(
-            tree.display_decl(&int, decls[3]).to_string(),
+            tree.display_decl(decls[3]).to_string(),
             "
 assert match x { (::) (S n) ((::) _ nil) => x; } : nat;
 "

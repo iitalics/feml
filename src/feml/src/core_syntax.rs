@@ -1,5 +1,3 @@
-use crate::intern::Str;
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Z,
@@ -7,9 +5,9 @@ pub enum Constant {
 }
 
 #[derive(Clone, Debug)]
-pub enum Exp<'i> {
+pub enum Exp<'s> {
     Const(Constant),
     Var(usize),
-    App(Box<Exp<'i>>, Box<Exp<'i>>),
-    Abs(Str<'i>, Box<Exp<'i>>),
+    App(Box<Exp<'s>>, Box<Exp<'s>>),
+    Abs(&'s str, Box<Exp<'s>>),
 }

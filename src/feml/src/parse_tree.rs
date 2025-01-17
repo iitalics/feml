@@ -1,4 +1,3 @@
-use crate::intern::{Intern, Str};
 use crate::token::Loc;
 use std::fmt;
 
@@ -86,12 +85,12 @@ pub type TyHnd = ExpHnd;
 #[derive(Copy, Clone)]
 pub struct Name<'s> {
     pub loc: Loc,
-    pub id: Str<'s>,
+    pub id: &'s str,
     pub is_operator: bool,
 }
 
 impl<'s> Name<'s> {
-    pub fn ident(loc: Loc, id: Str<'s>) -> Self {
+    pub fn ident(loc: Loc, id: &'s str) -> Self {
         Self {
             loc,
             id,
@@ -99,7 +98,7 @@ impl<'s> Name<'s> {
         }
     }
 
-    pub fn operator(loc: Loc, id: Str<'s>) -> Self {
+    pub fn operator(loc: Loc, id: &'s str) -> Self {
         Self {
             loc,
             id,
@@ -264,82 +263,76 @@ fn extend<T>(nodes: &mut Vec<T>, item: T) -> Hnd {
 
 pub struct DisplayDecl<'t, 's> {
     parse_tree: &'t ParseTree<'s>,
-    intern: &'s Intern,
     decl: DeclHnd,
 }
 
 impl fmt::Display for DisplayDecl<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_decl(f, self.intern, self.decl)
+        self.parse_tree.fmt_decl(f, self.decl)
     }
 }
 
 pub struct DisplayExp<'t, 's> {
     parse_tree: &'t ParseTree<'s>,
-    intern: &'s Intern,
     exp: ExpHnd,
 }
 
 impl fmt::Display for DisplayExp<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_exp(f, self.intern, self.exp, 0)
+        self.parse_tree.fmt_exp(f, self.exp, 0)
     }
 }
 
 pub struct DisplayPat<'t, 's> {
     parse_tree: &'t ParseTree<'s>,
-    intern: &'s Intern,
     pat: PatHnd,
 }
 
 impl fmt::Display for DisplayPat<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parse_tree.fmt_pat(f, self.intern, self.pat, 0)
+        self.parse_tree.fmt_pat(f, self.pat, 0)
     }
 }
 
 impl<'s> ParseTree<'s> {
-    pub fn display_decl<'t>(&'t self, intern: &'s Intern, decl: DeclHnd) -> DisplayDecl<'t, 's> {
+    pub fn display_decl<'t>(&'t self, decl: DeclHnd) -> DisplayDecl<'t, 's> {
         DisplayDecl {
             parse_tree: self,
-            intern,
             decl,
         }
     }
 
-    pub fn display_exp<'t>(&'t self, intern: &'s Intern, exp: ExpHnd) -> DisplayExp<'t, 's> {
+    pub fn display_exp<'t>(&'t self, exp: ExpHnd) -> DisplayExp<'t, 's> {
         DisplayExp {
             parse_tree: self,
-            intern,
             exp,
         }
     }
 
-    pub fn display_pat<'t>(&'t self, intern: &'s Intern, pat: PatHnd) -> DisplayPat<'t, 's> {
+    pub fn display_pat<'t>(&'t self, pat: PatHnd) -> DisplayPat<'t, 's> {
         DisplayPat {
             parse_tree: self,
-            intern,
             pat,
         }
     }
 
-    fn fmt_decl(&self, f: &mut fmt::Formatter<'_>, int: &Intern, decl: DeclHnd) -> fmt::Result {
+    fn fmt_decl(&self, f: &mut fmt::Formatter<'_>, decl: DeclHnd) -> fmt::Result {
         match self.view_decl(decl) {
             Decl::Def { sig, body, .. } => {
                 write!(f, "def ")?;
-                self.fmt_sig(f, int, *sig)?;
+                self.fmt_sig(f, *sig)?;
                 write!(f, " = ")?;
-                self.fmt_exp(f, int, *body, 0)?;
+                self.fmt_exp(f, *body, 0)?;
                 write!(f, ";")
             }
 
             Decl::Data { sig, ctors, .. } => {
                 write!(f, "data ")?;
-                self.fmt_sig(f, int, *sig)?;
+                self.fmt_sig(f, *sig)?;
                 write!(f, " {{")?;
                 for ctor in ctors.iter() {
                     write!(f, " ")?;
-                    self.fmt_sig(f, int, *ctor)?;
+                    self.fmt_sig(f, *ctor)?;
                     write!(f, ";")?;
                 }
                 write!(f, " }};")
@@ -347,37 +340,31 @@ impl<'s> ParseTree<'s> {
 
             Decl::Assert { exp, ty, .. } => {
                 write!(f, "assert ")?;
-                self.fmt_exp(f, int, *exp, 0)?;
+                self.fmt_exp(f, *exp, 0)?;
                 write!(f, " : ")?;
-                self.fmt_exp(f, int, *ty, 0)?;
+                self.fmt_exp(f, *ty, 0)?;
                 write!(f, ";")
             }
         }
     }
 
-    fn fmt_sig(&self, f: &mut fmt::Formatter<'_>, int: &Intern, sig: SigHnd) -> fmt::Result {
+    fn fmt_sig(&self, f: &mut fmt::Formatter<'_>, sig: SigHnd) -> fmt::Result {
         let sig = self.view_sig(sig);
-        self.fmt_name(f, int, &sig.name)?;
+        self.fmt_name(f, &sig.name)?;
         for param in sig.params.iter() {
             write!(f, " (")?;
-            self.fmt_name(f, int, &param.name)?;
+            self.fmt_name(f, &param.name)?;
             write!(f, " : ")?;
-            self.fmt_exp(f, int, param.ty, 0)?;
+            self.fmt_exp(f, param.ty, 0)?;
             write!(f, ")")?;
         }
         write!(f, " : ")?;
-        self.fmt_exp(f, int, sig.ret_ty, 0)
+        self.fmt_exp(f, sig.ret_ty, 0)
     }
 
-    fn fmt_exp(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        int: &Intern,
-        exp: ExpHnd,
-        prec: u32,
-    ) -> fmt::Result {
+    fn fmt_exp(&self, f: &mut fmt::Formatter<'_>, exp: ExpHnd, prec: u32) -> fmt::Result {
         match self.view_exp(exp) {
-            Exp::Var(name) => self.fmt_name(f, int, name),
+            Exp::Var(name) => self.fmt_name(f, name),
             Exp::Arr(Arrow { dom, param, rng }) => {
                 if prec > 1 {
                     write!(f, "(")?;
@@ -385,17 +372,17 @@ impl<'s> ParseTree<'s> {
                 match param {
                     Some(Param { name, ty }) => {
                         write!(f, "(")?;
-                        self.fmt_name(f, int, name)?;
+                        self.fmt_name(f, name)?;
                         write!(f, " : ")?;
-                        self.fmt_exp(f, int, *ty, 0)?;
+                        self.fmt_exp(f, *ty, 0)?;
                         write!(f, ")")?;
                     }
                     None => {
-                        self.fmt_exp(f, int, *dom, 2)?;
+                        self.fmt_exp(f, *dom, 2)?;
                     }
                 }
                 write!(f, " -> ")?;
-                self.fmt_exp(f, int, *rng, 1)?;
+                self.fmt_exp(f, *rng, 1)?;
                 if prec > 1 {
                     write!(f, ")")?;
                 }
@@ -405,9 +392,9 @@ impl<'s> ParseTree<'s> {
                 if prec > 2 {
                     write!(f, "(")?;
                 }
-                self.fmt_exp(f, int, *fun, 2)?;
+                self.fmt_exp(f, *fun, 2)?;
                 write!(f, " ")?;
-                self.fmt_exp(f, int, *arg, 3)?;
+                self.fmt_exp(f, *arg, 3)?;
                 if prec > 2 {
                     write!(f, ")")?;
                 }
@@ -421,17 +408,17 @@ impl<'s> ParseTree<'s> {
                 match param {
                     Some(Param { name, ty }) => {
                         write!(f, "(")?;
-                        self.fmt_name(f, int, name)?;
+                        self.fmt_name(f, name)?;
                         write!(f, " : ")?;
-                        self.fmt_exp(f, int, *ty, 0)?;
+                        self.fmt_exp(f, *ty, 0)?;
                         write!(f, ")")?;
                     }
                     None => {
-                        self.fmt_name(f, int, name)?;
+                        self.fmt_name(f, name)?;
                     }
                 }
                 write!(f, " => ")?;
-                self.fmt_exp(f, int, *body, 0)?;
+                self.fmt_exp(f, *body, 0)?;
                 if prec > 0 {
                     write!(f, ")")?;
                 }
@@ -442,13 +429,13 @@ impl<'s> ParseTree<'s> {
                     write!(f, "(")?;
                 }
                 write!(f, "match ")?;
-                self.fmt_exp(f, int, *subject, 2)?;
+                self.fmt_exp(f, *subject, 2)?;
                 write!(f, " {{")?;
                 for (lhs, rhs) in cases.iter() {
                     write!(f, " ")?;
-                    self.fmt_pat(f, int, *lhs, 0)?;
+                    self.fmt_pat(f, *lhs, 0)?;
                     write!(f, " => ")?;
-                    self.fmt_exp(f, int, *rhs, 0)?;
+                    self.fmt_exp(f, *rhs, 0)?;
                     write!(f, ";")?;
                 }
                 write!(f, " }}")?;
@@ -460,23 +447,17 @@ impl<'s> ParseTree<'s> {
         }
     }
 
-    fn fmt_pat(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        int: &Intern,
-        pat: PatHnd,
-        prec: u32,
-    ) -> fmt::Result {
+    fn fmt_pat(&self, f: &mut fmt::Formatter<'_>, pat: PatHnd, prec: u32) -> fmt::Result {
         match self.view_pat(pat) {
             Pat::Any(_) => write!(f, "_"),
-            Pat::Var(name) => self.fmt_name(f, int, name),
+            Pat::Var(name) => self.fmt_name(f, name),
             Pat::App(head, arg) => {
                 if prec > 0 {
                     write!(f, "(")?;
                 }
-                self.fmt_pat(f, int, *head, 0)?;
+                self.fmt_pat(f, *head, 0)?;
                 write!(f, " ")?;
-                self.fmt_pat(f, int, *arg, 1)?;
+                self.fmt_pat(f, *arg, 1)?;
                 if prec > 0 {
                     write!(f, ")")?;
                 }
@@ -485,11 +466,11 @@ impl<'s> ParseTree<'s> {
         }
     }
 
-    fn fmt_name(&self, f: &mut fmt::Formatter<'_>, int: &Intern, name: &Name<'s>) -> fmt::Result {
+    fn fmt_name(&self, f: &mut fmt::Formatter<'_>, name: &Name<'s>) -> fmt::Result {
         if name.is_operator {
-            write!(f, "({})", int.get(name.id))
+            write!(f, "({})", name.id)
         } else {
-            write!(f, "{}", int.get(name.id))
+            write!(f, "{}", name.id)
         }
     }
 }
@@ -501,32 +482,20 @@ mod test {
     #[test]
     #[allow(non_snake_case)]
     fn test_construct_and_pretty_print() {
-        let int = Intern::new();
         let mut pt = ParseTree::new();
-
         let loc = Loc::default();
-        let str_A = int.intern("A");
-        let str_B = int.intern("B");
-        let str_C = int.intern("C");
-        let str_S = int.intern("S");
-        let str_Z = int.intern("Z");
-        let str_eq = int.intern("==");
-        let str_nat = int.intern("nat");
-        let str_refl = int.intern("refl");
-        let str_type = int.intern("type");
-        let str_x = int.intern("x");
-        let str_y = int.intern("y");
-        let nm_A = Name::ident(loc, str_A);
-        let nm_B = Name::ident(loc, str_B);
-        let nm_C = Name::ident(loc, str_C);
-        let nm_S = Name::ident(loc, str_S);
-        let nm_Z = Name::ident(loc, str_Z);
-        let nm_eq = Name::operator(loc, str_eq);
-        let nm_nat = Name::ident(loc, str_nat);
-        let nm_refl = Name::ident(loc, str_refl);
-        let nm_type = Name::ident(loc, str_type);
-        let nm_x = Name::ident(loc, str_x);
-        let nm_y = Name::ident(loc, str_y);
+
+        let nm_A = Name::ident(loc, "A");
+        let nm_B = Name::ident(loc, "B");
+        let nm_C = Name::ident(loc, "C");
+        let nm_S = Name::ident(loc, "S");
+        let nm_Z = Name::ident(loc, "Z");
+        let nm_eq = Name::operator(loc, "==");
+        let nm_nat = Name::ident(loc, "nat");
+        let nm_refl = Name::ident(loc, "refl");
+        let nm_type = Name::ident(loc, "type");
+        let nm_x = Name::ident(loc, "x");
+        let nm_y = Name::ident(loc, "y");
         let var_A = pt.alloc_exp(Exp::Var(nm_A));
         let var_B = pt.alloc_exp(Exp::Var(nm_B));
         let var_C = pt.alloc_exp(Exp::Var(nm_C));
@@ -571,7 +540,7 @@ mod test {
         };
 
         assert_eq!(
-            pt.display_decl(&int, decl).to_string(),
+            pt.display_decl(decl).to_string(),
             "data (==) (A : type) (x : A) : A -> type { refl : (==) A x x; };",
         );
 
@@ -589,7 +558,7 @@ mod test {
         };
 
         assert_eq!(
-            pt.display_exp(&int, exp).to_string(),
+            pt.display_exp(exp).to_string(),
             "fn (x : nat) => fn y => x x (y y)"
         );
 
@@ -609,7 +578,7 @@ mod test {
         };
 
         assert_eq!(
-            pt.display_decl(&int, decl).to_string(),
+            pt.display_decl(decl).to_string(),
             "assert S Z : A -> (x : B) -> C;"
         );
 
@@ -627,7 +596,7 @@ mod test {
         };
 
         assert_eq!(
-            pt.display_exp(&int, exp).to_string(),
+            pt.display_exp(exp).to_string(),
             "match x { Z => Z; S y => S (S y); }"
         );
     }

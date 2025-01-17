@@ -51,7 +51,7 @@ impl fmt::Debug for Loc {
 /// A syntactic token.
 #[repr(u8)]
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
-pub enum Token<'a> {
+pub enum Token<'i> {
     LP = b'(',
     RP = b')',
     LB = b'[',
@@ -64,8 +64,8 @@ pub enum Token<'a> {
     Eq = b'=',
     Ar, // "->"
     Rr, // "=>"
-    Oper(&'a str),
-    Ident(&'a str),
+    Oper(&'i str),
+    Ident(&'i str),
     Kw(Keyword),
 }
 
@@ -182,17 +182,17 @@ fn ident_to_token(id: &str) -> Token<'_> {
 }
 
 /// Drives tokenization over an underlying string.
-pub struct Tokenizer<'a> {
-    input: &'a str,
+pub struct Tokenizer<'i> {
+    input: &'i str,
     byte: usize,
     line: u32,
     bol: usize,
 }
 
-impl<'a> Tokenizer<'a> {
+impl<'i> Tokenizer<'i> {
     /// Start tokenizing the given string. The beginning of the string will be designated
     /// first line and column.
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: &'i str) -> Self {
         Self {
             input,
             byte: 0,
@@ -247,7 +247,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Reads the next token.
-    fn read_next(&mut self) -> Result<Option<(Loc, Token<'a>)>, Error> {
+    fn read_next(&mut self) -> Result<Option<(Loc, Token<'i>)>, Error> {
         self.skip_whitespace_and_comments();
 
         // get loc of token before we advance the input
@@ -284,8 +284,8 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-impl<'a> Iterator for Tokenizer<'a> {
-    type Item = Result<(Loc, Token<'a>), Error>;
+impl<'i> Iterator for Tokenizer<'i> {
+    type Item = Result<(Loc, Token<'i>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.read_next().transpose()
