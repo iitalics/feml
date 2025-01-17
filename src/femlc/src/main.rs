@@ -1,7 +1,9 @@
 use feml::elaborate::Context;
+use feml::evaluate::evaluate;
 use feml::parse::Parser;
 use feml::parse_tree::{Decl, ParseTree};
 use feml::token::Tokenizer;
+use feml::value::{Env, Environ};
 use std::process::ExitCode;
 
 fn parse<'i>(input: &'i str) -> Result<ParseTree<'i>, String> {
@@ -26,7 +28,7 @@ fn parse<'i>(input: &'i str) -> Result<ParseTree<'i>, String> {
 fn main() -> ExitCode {
     let tree = match parse(
         "
-assert (fn x => S x (fn y => Z) x) : A -> A -> A;
+assert ((fn x => S x) (S (S Z))) : nat;
 ",
     ) {
         Ok(t) => t,
@@ -38,16 +40,19 @@ assert (fn x => S x (fn y => Z) x) : A -> A -> A;
 
     for decl in tree.decls() {
         if let Decl::Assert { exp, .. } = tree.view_decl(decl) {
+            println!("{}", tree.display_exp(*exp));
             let mut ctx = Context::new(&tree);
-            match ctx.elab_exp(*exp) {
-                Ok(stx) => {
-                    println!("{}", tree.display_exp(*exp));
-                    println!("--> {:?}", stx);
-                }
+            let stx = match ctx.elab_exp(*exp) {
+                Ok(stx) => stx,
                 Err(feml::elaborate::Error::NotDefined(loc, x)) => {
                     println!("error: input:{loc}: {x} not defined");
+                    continue;
                 }
-            }
+            };
+            println!("-> {:?}", stx);
+            let env = Environ::new(Env::Empty);
+            let val = evaluate(env, &stx);
+            println!("--> {}", val);
         }
     }
 
