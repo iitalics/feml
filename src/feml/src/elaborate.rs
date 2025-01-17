@@ -12,8 +12,11 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Context<'s> {
-    env: HashMap<&'s str, usize>,
-    depth: usize,
+    // maps binding names to (scope_depth - debruijn_index). this value is stable as new
+    // bindings are introduced and can be used to obtain the correct debruijn index by
+    // subtracting from scope_depth again.
+    scope: HashMap<&'s str, usize>,
+    scope_depth: usize,
 }
 
 fn look_up_in_global_env(x: &str) -> Option<stx::Constant> {
@@ -27,8 +30,8 @@ fn look_up_in_global_env(x: &str) -> Option<stx::Constant> {
 impl<'s> Context<'s> {
     pub fn new() -> Self {
         Self {
-            env: HashMap::with_capacity(32),
-            depth: 0,
+            scope: HashMap::with_capacity(32),
+            scope_depth: 0,
         }
     }
 
@@ -43,8 +46,8 @@ impl<'s> Context<'s> {
     }
 
     fn lookup(&self, name: pst::Name<'s>) -> Result<stx::Exp<'s>> {
-        if let Some(&lvl) = self.env.get(&name.id) {
-            let idx = self.depth - lvl - 1;
+        if let Some(&lvl) = self.scope.get(&name.id) {
+            let idx = self.scope_depth - lvl;
             return Ok(stx::Exp::Var(idx));
         }
         match look_up_in_global_env(name.id) {
@@ -54,15 +57,14 @@ impl<'s> Context<'s> {
     }
 
     fn bind(&mut self, id: &'s str) -> Option<usize> {
-        let lvl = self.depth;
-        self.depth += 1;
-        self.env.insert(id, lvl)
+        self.scope_depth += 1;
+        self.scope.insert(id, self.scope_depth)
     }
 
     fn unbind(&mut self, id: &'s str, prev: Option<usize>) {
-        self.depth -= 1;
+        self.scope_depth -= 1;
         if let Some(prev_lvl) = prev {
-            self.env.insert(id, prev_lvl);
+            self.scope.insert(id, prev_lvl);
         }
     }
 
