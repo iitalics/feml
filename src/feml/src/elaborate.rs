@@ -11,6 +11,7 @@ pub enum Error {
     TypeMismatch(Loc, String, String),
     TypeNotArrow(Loc, String),
     NoLambdaInfer(Loc, String),
+    InvalidType(Loc, String),
 }
 
 impl Error {
@@ -19,7 +20,8 @@ impl Error {
             Self::NotDefined(loc, _)
             | Self::TypeMismatch(loc, _, _)
             | Self::TypeNotArrow(loc, _)
-            | Self::NoLambdaInfer(loc, _) => *loc,
+            | Self::NoLambdaInfer(loc, _)
+            | Self::InvalidType(loc, _) => *loc,
         }
     }
 }
@@ -31,6 +33,7 @@ impl fmt::Display for Error {
             Self::TypeMismatch(_, t, s) => write!(f, "expected {t}, got {s}"),
             Self::TypeNotArrow(_, s) => write!(f, "expected function type, got {s}"),
             Self::NoLambdaInfer(_, id) => write!(f, "unable to infer type for {id}"),
+            Self::InvalidType(_, e) => write!(f, "invalid type expression {e}"),
         }
     }
 }
@@ -118,16 +121,20 @@ impl<'s> Context<'s> {
         &mut self,
         lam: &pst::Lambda<'s, '_>,
     ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
-        let _arg_ty = match lam.param {
-            Some(_) => todo!("convert exp to type"),
+        let arg_id = lam.name.id;
+        let arg_ty = match lam.param {
+            Some(param) => self.elab_ty(param.ty)?,
             None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
         };
-        // let (body_stx, body_ty) = {
-        //     let prev = self.bind(arg_id, arg_ty.clone());
-        //     let result = self.elab_exp_infer(&lam.body);
-        //     self.unbind(arg_id, prev);
-        //     result?
-        // };
+        let (body_stx, body_ty) = {
+            let prev = self.bind(arg_id, arg_ty.clone());
+            let result = self.elab_exp_infer(&lam.body);
+            self.unbind(arg_id, prev);
+            result?
+        };
+        let lam = Box::new(stx::Exp::Abs(arg_id, body_stx));
+        let ty = stx::Type::new(stx::Ty::Arr(arg_ty, body_ty));
+        Ok((lam, ty))
     }
 
     fn elab_lam_check(
@@ -136,14 +143,20 @@ impl<'s> Context<'s> {
         ty: &stx::Ty,
     ) -> Result<Box<stx::Exp<'s>>> {
         let arg_id = lam.name.id;
-        match lam.param {
-            Some(_) => todo!("convert exp to type"),
-            None => {}
-        }
         let (arg_ty, ret_ty) = match ty {
             stx::Ty::Arr(dom, rng) => (dom, rng),
             _ => return Err(Error::TypeNotArrow(lam.loc(), ty.to_string())),
         };
+        if let Some(param) = lam.param {
+            let arg_ann_ty = self.elab_ty(param.ty)?;
+            if !ty.compatible(&arg_ann_ty) {
+                return Err(Error::TypeMismatch(
+                    param.loc(),
+                    arg_ann_ty.to_string(),
+                    ty.to_string(),
+                ));
+            }
+        }
         let body_stx = {
             let prev = self.bind(arg_id, arg_ty.clone());
             let result = self.elab_exp_check(&lam.body, ret_ty);
@@ -187,6 +200,18 @@ impl<'s> Context<'s> {
         self.scope_depth -= 1;
         if let Some(prev_binding) = prev {
             self.scope.insert(id, prev_binding);
+        }
+    }
+
+    pub fn elab_ty(&mut self, tyexp: &pst::Ty<'s, '_>) -> Result<stx::Type> {
+        match tyexp {
+            pst::Exp::Var(name) if name.id == "nat" => Ok(stx::Type::new(stx::Ty::Nat)),
+            pst::Exp::Arr(arr) if arr.param.is_none() => {
+                let dom = self.elab_ty(arr.dom)?;
+                let rng = self.elab_ty(arr.rng)?;
+                Ok(stx::Type::new(stx::Ty::Arr(dom, rng)))
+            }
+            _ => Err(Error::InvalidType(tyexp.loc(), tyexp.to_string())),
         }
     }
 }

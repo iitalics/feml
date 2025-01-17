@@ -82,6 +82,13 @@ pub struct Param<'s, 'a> {
     //pub loc_rp : Loc,
 }
 
+impl Param<'_, '_> {
+    pub fn loc(&self) -> Loc {
+        //self.loc_lp
+        self.name.loc
+    }
+}
+
 /// Expressions.
 #[derive(Copy, Clone)]
 pub enum Exp<'s, 'a> {
@@ -105,8 +112,7 @@ impl Exp<'_, '_> {
                 Exp::Var(name) => break name.loc,
                 Exp::App(fun, _) => this = fun,
                 Exp::Arr(arr) => match arr.param {
-                    //Some(p) => break p.loc_lp,
-                    Some(p) => break p.name.loc,
+                    Some(p) => break p.loc(),
                     None => this = arr.dom,
                 },
                 Exp::Lam(lam) => break lam.loc(),

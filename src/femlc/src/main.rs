@@ -33,7 +33,7 @@ fn main() -> ExitCode {
     let decls = match parse(
         &al,
         "
-assert S (S Z) : nat;
+assert ((fn (x : nat) => S x) (S (S Z))) : nat;
 ",
     ) {
         Ok(t) => t,
@@ -44,18 +44,23 @@ assert S (S Z) : nat;
     };
 
     for decl in decls {
-        if let parse_tree::Decl::Assert { exp, .. } = decl {
+        if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
             let mut ctx = elaborate::Context::new();
-            let (stx, ty) = match ctx.elab_exp_infer(exp) {
+            let result = ctx
+                .elab_ty(&ty)
+                .and_then(|ty| ctx.elab_exp_check(exp, &ty).map(|e| (e, ty)));
+
+            let (e, ty) = match result {
                 Ok(result) => result,
                 Err(e) => {
                     println!("error: input:{}: {}", e.loc(), e);
                     continue;
                 }
             };
-            println!("{stx}");
+
+            println!("{e}");
             let env = value::Environ::new(value::Env::Empty);
-            let val = evaluate(env, &stx);
+            let val = evaluate(env, &e);
             println!("= {val} : {ty}");
         }
     }
