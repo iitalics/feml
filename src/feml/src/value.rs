@@ -18,11 +18,13 @@ pub enum Val<'e> {
     Arrow(ValBox<'e>, ValBox<'e>),
     // closure value
     Abs(stx::Lam<'e>, Env<'e>),
+    // neutral
+    Neu(usize),
 }
 
 #[derive(Clone)]
 pub enum Env<'e> {
-    Empty,
+    Neutral(usize),
     Cons(ValBox<'e>, Rc<Env<'e>>),
 }
 
@@ -52,11 +54,19 @@ pub fn abs<'e>(lam: stx::Lam<'e>, env: Env<'e>) -> ValBox<'e> {
     ValBox::new(Val::Abs(lam, env))
 }
 
-pub fn empty() -> Env<'static> {
-    Env::Empty
+pub fn neu(lvl: usize) -> ValBox<'static> {
+    ValBox::new(Val::Neu(lvl))
 }
 
-pub fn cons<'e>(v: ValBox<'e>, env: Env<'e>) -> Env<'e> {
+pub fn env_empty() -> Env<'static> {
+    env_neutral(0)
+}
+
+pub fn env_neutral(n: usize) -> Env<'static> {
+    Env::Neutral(n)
+}
+
+pub fn env_cons<'e>(v: ValBox<'e>, env: Env<'e>) -> Env<'e> {
     Env::Cons(v, Rc::new(env))
 }
 
@@ -87,6 +97,7 @@ impl fmt::Display for DisplayVal<'_, '_> {
             Val::TypeNat => write!(f, "nat"),
             Val::Nat(n) => write!(f, "{n}"),
             Val::CtorS | Val::Abs(_, _) => write!(f, "[fn]"),
+            Val::Neu(lvl) => write!(f, "?{lvl}"),
             Val::Arrow(dom, rng) => {
                 open(f, self.prec, 1)?;
                 write!(f, "{} -> {}", dom.display_prec(2), rng.display_prec(1))?;

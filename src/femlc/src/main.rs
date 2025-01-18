@@ -54,7 +54,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (A : type) => fn (x : A) => A) nat : nat -> nat;
+assert (fn (A : type) => fn (x : A) => x) nat : nat -> nat;
 ";
 
 fn main() -> ExitCode {
@@ -75,7 +75,7 @@ fn main() -> ExitCode {
                 let exp = ctx.elab_exp_check(exp, ty.clone())?;
 
                 println!("{exp}");
-                let val = evaluate(value::empty(), exp);
+                let val = evaluate(value::env_empty(), exp);
                 println!("= {val} : {ty}");
             }
 

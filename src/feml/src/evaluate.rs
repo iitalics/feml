@@ -14,19 +14,22 @@ pub fn evaluate<'e>(env: Env<'e>, exp: TermBox<'e>) -> ValBox<'e> {
             evaluate(env.clone(), arr.dom.clone()),
             evaluate(env, arr.rng.clone()),
         ),
-        Term::App(fun, arg) => apply(evaluate(env.clone(), fun.clone()), evaluate(env, arg.clone())),
+        Term::App(fun, arg) => apply(
+            evaluate(env.clone(), fun.clone()),
+            evaluate(env, arg.clone()),
+        ),
     }
 }
 
 fn env_ref<'e>(mut env: &Env<'e>, mut i: usize) -> ValBox<'e> {
     loop {
         match (env, i) {
+            (Env::Neutral(n), i) => return value::neu(n - i),
             (Env::Cons(v, _), 0) => return v.clone(),
             (Env::Cons(_, rest), _) => {
                 env = rest;
                 i -= 1;
             }
-            (Env::Empty, _) => panic!("variable index out of range"),
         }
     }
 }
@@ -34,7 +37,7 @@ fn env_ref<'e>(mut env: &Env<'e>, mut i: usize) -> ValBox<'e> {
 fn apply<'e>(fun: ValBox<'e>, arg: ValBox<'e>) -> ValBox<'e> {
     match &*fun {
         Val::Abs(lam, env) => {
-            let env = value::cons(arg, env.clone());
+            let env = value::env_cons(arg, env.clone());
             // lam.arg_id ...?
             evaluate(env, lam.body.clone())
         }

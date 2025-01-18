@@ -94,8 +94,8 @@ impl<'e> Context<'e> {
 
     pub fn elab_type(&mut self, ty_exp: &pst::Exp<'e, '_>) -> Result<Type<'e>> {
         let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
-        // TODO: introduce neutral terms into the environment
-        let ty = evaluate(value::empty(), ty_tm);
+        let env = value::env_neutral(self.scope_depth);
+        let ty = evaluate(env, ty_tm);
         Ok(ty)
     }
 
@@ -116,7 +116,7 @@ impl<'e> Context<'e> {
             Some(param) => self.elab_type(param.ty)?,
             None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
         };
-        let (body_tm, body_ty) = {
+        let (body_tm, ret_ty) = {
             let prev = self.bind(arg_id, arg_ty.clone());
             let result = self.elab_exp_infer(lam.body);
             self.unbind(arg_id, prev);
@@ -124,7 +124,7 @@ impl<'e> Context<'e> {
         };
         Ok((
             core_syntax::lam(arg_id, body_tm),
-            value::arrow(arg_ty, body_ty),
+            value::arrow(arg_ty, ret_ty),
         ))
     }
 
@@ -151,12 +151,25 @@ impl<'e> Context<'e> {
     }
 
     fn elab_arr(&mut self, arr: &pst::Arrow<'e, '_>) -> Result<TermBox<'e>> {
-        if arr.param.is_some() {
-            unimplemented!("dependent arrows")
-        }
         let dom = self.elab_exp_check(arr.dom, value::type_type())?;
-        let rng = self.elab_exp_check(arr.dom, value::type_type())?;
-        Ok(core_syntax::arrow(dom, rng))
+        match arr.param {
+            Some(param) => {
+                let env = value::env_neutral(self.scope_depth);
+                let arg_ty = evaluate(env, dom.clone());
+                let arg_id = param.name.id;
+                let rng = {
+                    let prev = self.bind(arg_id, arg_ty);
+                    let result = self.elab_exp_check(arr.rng, value::type_type());
+                    self.unbind(arg_id, prev);
+                    result?
+                };
+                Ok(core_syntax::arrow(dom, rng))
+            }
+            None => {
+                let rng = self.elab_exp_check(arr.rng, value::type_type())?;
+                Ok(core_syntax::arrow(dom, rng))
+            }
+        }
     }
 
     fn lookup(&self, name: pst::Name<'e>) -> Result<(TermBox<'e>, Type<'e>)> {
