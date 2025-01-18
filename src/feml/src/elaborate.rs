@@ -1,5 +1,5 @@
 use crate::core_syntax::{self, Constant, TermBox};
-use crate::evaluate::evaluate;
+use crate::evaluate::{apply_closure, evaluate};
 use crate::parse_tree as pst;
 use crate::token::Loc;
 use crate::value::{self, Val, ValBox};
@@ -13,7 +13,7 @@ pub enum Error {
     #[error("expected {1}, got {2}")]
     TypeMismatch(Loc, String, String),
     #[error("expected function type, got {1}")]
-    TypeNotArrow(Loc, String),
+    NotFunction(Loc, String),
     #[error("unable to infer type for {1}")]
     NoLambdaInfer(Loc, String),
 }
@@ -23,7 +23,7 @@ impl Error {
         match self {
             Self::NotDefined(loc, _)
             | Self::TypeMismatch(loc, _, _)
-            | Self::TypeNotArrow(loc, _)
+            | Self::NotFunction(loc, _)
             | Self::NoLambdaInfer(loc, _) => *loc,
         }
     }
@@ -64,6 +64,10 @@ impl<'e> Context<'e> {
         }
     }
 
+    fn env(&self) -> value::Env<'e> {
+        value::env_neutral(self.scope_depth)
+    }
+
     pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'e, '_>) -> Result<(TermBox<'e>, Type<'e>)> {
         match exp {
             pst::Exp::Var(x) => self.lookup(*x),
@@ -94,8 +98,7 @@ impl<'e> Context<'e> {
 
     pub fn elab_type(&mut self, ty_exp: &pst::Exp<'e, '_>) -> Result<Type<'e>> {
         let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
-        let env = value::env_neutral(self.scope_depth);
-        let ty = evaluate(env, ty_tm);
+        let ty = evaluate(self.env(), ty_tm);
         Ok(ty)
     }
 
@@ -105,8 +108,13 @@ impl<'e> Context<'e> {
         arg: &pst::Arg<'e, '_>,
     ) -> Result<(TermBox<'e>, Type<'e>)> {
         let (fun_tm, fun_ty) = self.elab_exp_infer(fun)?;
-        let (arg_ty, ret_ty) = assert_arrow_type(fun.loc(), fun_ty)?;
-        let arg_tm = self.elab_exp_check(arg, arg_ty)?;
+        let (dom_ty, rng) = match &*fun_ty {
+            Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
+            _ => return Err(Error::NotFunction(fun.loc(), fun_ty.to_string())),
+        };
+        let arg_tm = self.elab_exp_check(arg, dom_ty)?;
+        let arg = evaluate(self.env(), arg_tm.clone());
+        let ret_ty = apply_closure(rng, arg);
         Ok((core_syntax::app(fun_tm, arg_tm), ret_ty))
     }
 
@@ -122,28 +130,34 @@ impl<'e> Context<'e> {
             self.unbind(arg_id, prev);
             result?
         };
-        Ok((
-            core_syntax::lam(arg_id, body_tm),
-            value::arrow(arg_ty, ret_ty),
-        ))
+        unimplemented!("construct pi type")
+        // Ok((
+        //     core_syntax::lam(arg_id, body_tm),
+        //     value::arrow(arg_ty, ret_ty),
+        // ))
     }
 
     fn elab_lam_check(&mut self, lam: &pst::Lambda<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
         let arg_id = lam.name.id;
-        let (arg_ty, ret_ty) = assert_arrow_type(lam.loc(), ty)?;
+        let (dom_ty, rng) = match &*ty {
+            Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
+            _ => return Err(Error::NotFunction(lam.loc(), ty.to_string())),
+        };
         if let Some(param) = lam.param {
             let arg_ann_ty = self.elab_type(param.ty)?;
-            if !compatible(&arg_ty, &arg_ann_ty) {
+            if !compatible(&dom_ty, &arg_ann_ty) {
                 return Err(Error::TypeMismatch(
                     param.ty.loc(),
                     arg_ann_ty.to_string(),
-                    arg_ty.to_string(),
+                    dom_ty.to_string(),
                 ));
             }
         }
         let body_tm = {
-            let prev = self.bind(arg_id, arg_ty);
-            let result = self.elab_exp_check(lam.body, ret_ty);
+            let prev = self.bind(arg_id, dom_ty);
+            let arg_v = self.env().nth(0);
+            let rng_ty = apply_closure(rng, arg_v);
+            let result = self.elab_exp_check(lam.body, rng_ty);
             self.unbind(arg_id, prev);
             result?
         };
@@ -152,22 +166,26 @@ impl<'e> Context<'e> {
 
     fn elab_arr(&mut self, arr: &pst::Arrow<'e, '_>) -> Result<TermBox<'e>> {
         let dom = self.elab_exp_check(arr.dom, value::type_type())?;
+        let dom_ty = evaluate(self.env(), dom.clone());
         match arr.param {
             Some(param) => {
-                let env = value::env_neutral(self.scope_depth);
-                let arg_ty = evaluate(env, dom.clone());
-                let arg_id = param.name.id;
+                let dom_id = param.name.id;
                 let rng = {
-                    let prev = self.bind(arg_id, arg_ty);
+                    let prev = self.bind(dom_id, dom_ty);
                     let result = self.elab_exp_check(arr.rng, value::type_type());
-                    self.unbind(arg_id, prev);
+                    self.unbind(dom_id, prev);
                     result?
                 };
-                Ok(core_syntax::arrow(dom, rng))
+                Ok(core_syntax::pi(dom, dom_id, rng))
             }
             None => {
-                let rng = self.elab_exp_check(arr.rng, value::type_type())?;
-                Ok(core_syntax::arrow(dom, rng))
+                let rng = {
+                    self.scope_depth += 1;
+                    let result = self.elab_exp_check(arr.rng, value::type_type());
+                    self.scope_depth -= 1;
+                    result?
+                };
+                Ok(core_syntax::pi(dom, "_", rng))
             }
         }
     }
@@ -209,23 +227,36 @@ fn constant_type(c: Constant) -> Type<'static> {
     }
 }
 
-fn assert_arrow_type(loc: Loc, t: Type<'_>) -> Result<(Type<'_>, Type<'_>)> {
-    match &*t {
-        Val::Arrow(dom, rng) => Ok((dom.clone(), rng.clone())),
-        _ => Err(Error::TypeNotArrow(loc, t.to_string())),
-    }
-}
-
 fn compatible(t1: &Type<'_>, t2: &Type<'_>) -> bool {
     match (&**t1, &**t2) {
         (Val::TypeType, Val::TypeType) => true,
+        (Val::TypeType, _) | (_, Val::TypeType) => false,
         (Val::TypeNat, Val::TypeNat) => true,
-        (Val::Arrow(dom1, rng1), Val::Arrow(dom2, rng2)) => {
-            if !compatible(dom2, dom1) {
-                return false;
-            }
-            compatible(rng1, rng2)
+        (Val::TypeNat, _) | (_, Val::TypeNat) => false,
+        (Val::Neu(x), Val::Neu(y)) => x == y,
+        (Val::Neu(_), _) | (_, Val::Neu(_)) => false,
+        (_, _) => {
+            eprintln!("*TODO* {t1} \u{2264}? {t2}");
+            true
         }
-        (_, _) => false,
     }
 }
+
+// fn reify(level: usize, v: ValBox<'_>) -> TermBox<'_> {
+//     match &*v {
+//         Val::TypeType => core_syntax::cst(Constant::TypeType),
+//         Val::TypeNat => core_syntax::cst(Constant::TypeNat),
+//         Val::CtorS => core_syntax::cst(Constant::S),
+//         Val::Neu(l) => core_syntax::var(level - l),
+//         Val::Nat(n) => {
+//             let mut tm = core_syntax::cst(Constant::Z);
+//             let mut s = None;
+//             for _ in 0..*n {
+//                 let s = s.get_or_insert_with(|| core_syntax::cst(Constant::S));
+//                 tm = core_syntax::app(s.clone(), tm);
+//             }
+//             tm
+//         }
+//         _ => unimplemented!("reify {v}"),
+//     }
+// }

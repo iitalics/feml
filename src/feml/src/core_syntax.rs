@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::rc::Rc;
 
@@ -20,22 +21,15 @@ pub enum Term<'s> {
     // f a
     App(TermBox<'s>, TermBox<'s>),
     // fn x => e
-    Lam(Lam<'s>),
-    // t -> s
-    Arr(Arrow<'s>),
+    Lam(Abs<'s>),
+    // (x : t) -> s
+    Pi(TermBox<'s>, Abs<'s>),
 }
 
 #[derive(Debug, Clone)]
-pub struct Lam<'s> {
-    pub arg_id: &'s str,
+pub struct Abs<'s> {
+    pub id: &'s str, // only for pretty printing
     pub body: TermBox<'s>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Arrow<'s> {
-    // TODO: pi type
-    pub dom: TermBox<'s>,
-    pub rng: TermBox<'s>,
 }
 
 // == Constructors ==
@@ -52,12 +46,12 @@ pub fn app<'s>(fun: TermBox<'s>, arg: TermBox<'s>) -> TermBox<'s> {
     Rc::new(Term::App(fun, arg))
 }
 
-pub fn lam<'s>(arg_id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
-    Rc::new(Term::Lam(Lam { arg_id, body }))
+pub fn lam<'s>(id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
+    Rc::new(Term::Lam(Abs { id, body }))
 }
 
-pub fn arrow<'s>(dom: TermBox<'s>, rng: TermBox<'s>) -> TermBox<'s> {
-    Rc::new(Term::Arr(Arrow { dom, rng }))
+pub fn pi<'s>(dom: TermBox<'s>, id: &'s str, rng: TermBox<'s>) -> TermBox<'s> {
+    Rc::new(Term::Pi(dom, Abs { id, body: rng }))
 }
 
 // == Pretty printing ==
@@ -75,7 +69,7 @@ impl fmt::Display for Constant {
 
 struct DisplayTermContext<'s> {
     // convert debruijn indices into strings
-    names: Vec<&'s str>,
+    names: Vec<Cow<'s, str>>,
 }
 
 impl<'s> DisplayTermContext<'s> {
@@ -83,13 +77,30 @@ impl<'s> DisplayTermContext<'s> {
         Self { names: vec![] }
     }
 
+    fn fresh(&self, id: &'s str) -> Cow<'s, str> {
+        let mut new_id = Cow::Borrowed(id);
+        let mut tries = 0;
+        'in_use: loop {
+            for prev_id in self.names.iter() {
+                if prev_id == &new_id {
+                    // add integer suffix to generate new name
+                    // x -> x1 -> x2 -> ...
+                    tries += 1;
+                    new_id = Cow::Owned(format!("{id}{tries}"));
+                    continue 'in_use;
+                }
+            }
+            return new_id;
+        }
+    }
+
     fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Term<'s>, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
         match exp {
             Term::Cst(c) => write!(f, "{c}"),
             Term::Var(i) => {
-                let name = self.names[self.names.len() - i - 1];
-                write!(f, "{name}")
+                let id = &self.names[self.names.len() - i - 1];
+                write!(f, "{id}")
             }
             Term::App(fun, arg) => {
                 open(f, prec, 2)?;
@@ -98,22 +109,28 @@ impl<'s> DisplayTermContext<'s> {
                 self.fmt(f, arg, 3)?;
                 close(f, prec, 2)
             }
-            Term::Lam(Lam { arg_id, body }) => {
+            Term::Lam(lam) => {
                 open(f, prec, 0)?;
-                write!(f, "fn {arg_id}")?;
-                self.names.push(arg_id);
+                let id = self.fresh(lam.id);
+                write!(f, "fn {id}")?;
+                self.names.push(id);
                 let result = write!(f, " => ")
-                    .and_then(|_| self.fmt(f, body, 0))
+                    .and_then(|_| self.fmt(f, &lam.body, 0))
                     .and_then(|_| close(f, prec, 0));
                 self.names.pop();
                 result
             }
-            Term::Arr(Arrow { dom, rng }) => {
+            Term::Pi(dom, rng) => {
                 open(f, prec, 1)?;
-                self.fmt(f, dom, 2)?;
-                write!(f, " -> ")?;
-                self.fmt(f, rng, 1)?;
-                close(f, prec, 1)
+                // TODO: if rng is constant in its argument, don't name the domain at all
+                let id = self.fresh(rng.id);
+                write!(f, "({id} : ")?;
+                self.fmt(f, dom, 0)?;
+                write!(f, ") -> ")?;
+                self.names.push(id);
+                let result = self.fmt(f, &rng.body, 1).and_then(|_| close(f, prec, 1));
+                self.names.pop();
+                result
             }
         }
     }
