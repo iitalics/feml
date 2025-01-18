@@ -8,22 +8,40 @@ pub enum Constant {
     S,
 }
 
-pub type Exp<'s> = Box<Ex<'s>>;
+pub type TermBox<'s> = Box<Term<'s>>;
 
 #[derive(Debug)]
-pub enum Ex<'s> {
+pub enum Term<'s> {
     // c
     Cst(Constant),
     // x
     Var(usize),
     // f a
-    App(Exp<'s>, Exp<'s>),
+    App(TermBox<'s>, TermBox<'s>),
     // fn x => e
     Lam(Lam<'s>),
 }
 
 #[derive(Debug)]
-pub struct Lam<'s>(pub &'s str, pub Exp<'s>);
+pub struct Lam<'s>(pub &'s str, pub TermBox<'s>);
+
+// == Constructors ==
+
+pub fn cst(c: Constant) -> TermBox<'static> {
+    Box::new(Term::Cst(c))
+}
+
+pub fn var(i: usize) -> TermBox<'static> {
+    Box::new(Term::Var(i))
+}
+
+pub fn app<'s>(fun: TermBox<'s>, arg: TermBox<'s>) -> TermBox<'s> {
+    Box::new(Term::App(fun, arg))
+}
+
+pub fn lam<'s>(id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
+    Box::new(Term::Lam(Lam(id, body)))
+}
 
 // == Pretty printing ==
 
@@ -38,31 +56,32 @@ impl fmt::Display for Constant {
     }
 }
 
-struct ExpDisplayContext<'s> {
+struct DisplayTermContext<'s> {
+    // convert debruijn indices into strings
     names: Vec<&'s str>,
 }
 
-impl<'s> ExpDisplayContext<'s> {
+impl<'s> DisplayTermContext<'s> {
     fn new() -> Self {
         Self { names: vec![] }
     }
 
-    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Ex<'s>, prec: u32) -> fmt::Result {
+    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Term<'s>, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
         match exp {
-            Ex::Cst(c) => write!(f, "{c}"),
-            Ex::Var(i) => {
+            Term::Cst(c) => write!(f, "{c}"),
+            Term::Var(i) => {
                 let name = self.names[self.names.len() - i - 1];
                 write!(f, "{name}")
             }
-            Ex::App(fun, arg) => {
+            Term::App(fun, arg) => {
                 open(f, prec, 2)?;
                 self.fmt(f, fun, 2)?;
                 write!(f, " ")?;
                 self.fmt(f, arg, 3)?;
                 close(f, prec, 2)
             }
-            Ex::Lam(Lam(name, body)) => {
+            Term::Lam(Lam(name, body)) => {
                 open(f, prec, 0)?;
                 write!(f, "fn {name}")?;
                 self.names.push(name);
@@ -76,8 +95,8 @@ impl<'s> ExpDisplayContext<'s> {
     }
 }
 
-impl fmt::Display for Exp<'_> {
+impl fmt::Display for TermBox<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        ExpDisplayContext::new().fmt(f, self, 0)
+        DisplayTermContext::new().fmt(f, self, 0)
     }
 }
