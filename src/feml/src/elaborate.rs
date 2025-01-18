@@ -12,6 +12,8 @@ pub enum Error {
     NotDefined(Loc, String),
     #[error("expected {1}, got {2}")]
     TypeMismatch(Loc, String, String),
+    #[error("unexpected parameter type {1}, expected {2}")]
+    ParamTypeMismatch(Loc, String, String),
     #[error("expected function type, got {1}")]
     NotFunction(Loc, String),
     #[error("unable to infer type for {1}")]
@@ -23,6 +25,7 @@ impl Error {
         match self {
             Self::NotDefined(loc, _)
             | Self::TypeMismatch(loc, _, _)
+            | Self::ParamTypeMismatch(loc, _, _)
             | Self::NotFunction(loc, _)
             | Self::NoLambdaInfer(loc, _) => *loc,
         }
@@ -84,11 +87,11 @@ impl<'e> Context<'e> {
             _ => {
                 // no special checking rule, fall back to inference
                 let (stx, inf_ty) = self.elab_exp_infer(exp)?;
-                if !compatible(&inf_ty, &ty) {
+                if !self.compatible(&inf_ty, &ty) {
                     return Err(Error::TypeMismatch(
                         exp.loc(),
-                        ty.to_string(),
-                        inf_ty.to_string(),
+                        self.pretty(&ty),
+                        self.pretty(&inf_ty),
                     ));
                 }
                 Ok(stx)
@@ -110,7 +113,7 @@ impl<'e> Context<'e> {
         let (fun_tm, fun_ty) = self.elab_exp_infer(fun)?;
         let (dom_ty, rng) = match &*fun_ty {
             Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
-            _ => return Err(Error::NotFunction(fun.loc(), fun_ty.to_string())),
+            _ => return Err(Error::NotFunction(fun.loc(), self.pretty(&fun_ty))),
         };
         let arg_tm = self.elab_exp_check(arg, dom_ty)?;
         let arg = evaluate(self.env(), arg_tm.clone());
@@ -144,15 +147,15 @@ impl<'e> Context<'e> {
         let arg_id = lam.name.id;
         let (dom_ty, rng) = match &*ty {
             Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
-            _ => return Err(Error::NotFunction(lam.loc(), ty.to_string())),
+            _ => return Err(Error::NotFunction(lam.loc(), self.pretty(&ty))),
         };
         if let Some(param) = lam.param {
             let arg_ann_ty = self.elab_type(param.ty)?;
-            if !compatible(&dom_ty, &arg_ann_ty) {
-                return Err(Error::TypeMismatch(
+            if !self.compatible(&dom_ty, &arg_ann_ty) {
+                return Err(Error::ParamTypeMismatch(
                     param.ty.loc(),
-                    arg_ann_ty.to_string(),
-                    dom_ty.to_string(),
+                    self.pretty(&arg_ann_ty),
+                    self.pretty(&dom_ty),
                 ));
             }
         }
@@ -219,6 +222,18 @@ impl<'e> Context<'e> {
             self.scope.insert(id, prev_binding);
         }
     }
+
+    fn compatible(&self, t1: &Type<'_>, t2: &Type<'_>) -> bool {
+        let tm1 = reify(self.scope_depth, t1);
+        let tm2 = reify(self.scope_depth, t2);
+        tm1.alpha_eq(&tm2)
+    }
+
+    pub fn pretty(&self, t: &Type<'_>) -> String {
+        let tm = reify(self.scope_depth, t);
+        // TODO: pass context to fmt to populate names
+        tm.to_string()
+    }
 }
 
 fn constant_type(c: Constant) -> Type<'static> {
@@ -230,22 +245,8 @@ fn constant_type(c: Constant) -> Type<'static> {
     }
 }
 
-fn compatible(t1: &Type<'_>, t2: &Type<'_>) -> bool {
-    match (&**t1, &**t2) {
-        (Val::TypeType, Val::TypeType) => true,
-        (Val::TypeType, _) | (_, Val::TypeType) => false,
-        (Val::TypeNat, Val::TypeNat) => true,
-        (Val::TypeNat, _) | (_, Val::TypeNat) => false,
-        (Val::Neu(x), Val::Neu(y)) => x == y,
-        (Val::Neu(_), _) | (_, Val::Neu(_)) => false,
-        (_, _) => {
-            eprintln!("*TODO* {t1} \u{2264}? {t2}");
-            true
-        }
-    }
-}
-
 fn reify<'e>(level: usize, v: &Val<'e>) -> TermBox<'e> {
+    // TODO: type-based reification for proper eta-expansion
     match v {
         Val::TypeType => core_syntax::cst(Constant::TypeType),
         Val::TypeNat => core_syntax::cst(Constant::TypeNat),

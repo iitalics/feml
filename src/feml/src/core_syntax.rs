@@ -32,6 +32,25 @@ pub struct Abs<'s> {
     pub body: TermBox<'s>,
 }
 
+impl Term<'_> {
+    pub fn alpha_eq(&self, rhs: &Term<'_>) -> bool {
+        match (self, rhs) {
+            (Term::Cst(c1), Term::Cst(c2)) => *c1 == *c2,
+            (Term::Var(i1), Term::Var(i2)) => *i1 == *i2,
+            (Term::App(f1, a1), Term::App(f2, a2)) => f1.alpha_eq(f2) && a1.alpha_eq(a2),
+            (Term::Lam(b1), Term::Lam(b2)) => b1.alpha_eq(b2),
+            (Term::Pi(d1, r1), Term::Pi(d2, r2)) => d2.alpha_eq(d1) && r1.alpha_eq(r2),
+            (_, _) => false,
+        }
+    }
+}
+
+impl Abs<'_> {
+    pub fn alpha_eq(&self, rhs: &Abs<'_>) -> bool {
+        self.body.alpha_eq(&rhs.body)
+    }
+}
+
 // == Constructors ==
 
 pub fn cst(c: Constant) -> TermBox<'static> {
@@ -97,13 +116,15 @@ impl<'s> DisplayTermContext<'s> {
     fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Term<'s>, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
         match exp {
-            Term::Cst(c) => write!(f, "cst[{c}]"),
+            Term::Cst(c) => write!(f, "{c}"),
             Term::Var(i) => {
                 if *i >= self.names.len() {
-                    write!(f, "var[{i}]")
+                    // FIXME: allow passing initial context of names for pretty printing
+                    // these variables
+                    write!(f, ".{i}")
                 } else {
                     let id = &self.names[self.names.len() - i - 1];
-                    write!(f, "var[{id}]")
+                    write!(f, "{id}")
                 }
             }
             Term::App(fun, arg) => {

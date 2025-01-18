@@ -118,34 +118,28 @@ pub fn env_cons<'e>(v: ValBox<'e>, env: Env<'e>) -> Env<'e> {
 
 // == Pretty printing ==
 
-// FIXME: pretty printing values is not really appropriate. you should reify values back
-// into terms and then pretty print terms. this would enable printing closures and neutral
-// terms.
+pub struct DisplayVal<'e, 'v> {
+    val: &'v Val<'e>,
+}
 
-// pub struct DisplayVal<'e, 'v> {
-//     val: &'v Val<'e>,
-//     prec: u32,
-// }
-// impl<'e> Val<'e> {
-//     pub fn display_prec(&self, prec: u32) -> DisplayVal<'e, '_> {
-//         DisplayVal { val: self, prec }
-//     }
-// }
-// impl fmt::Display for DisplayVal<'_, '_> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         //use crate::pretty_print_utils::{close, open};
-//     }
-// }
+impl<'e> Val<'e> {
+    // FIXME: pretty printing values is not really appropriate. you should reify values
+    // back into terms and then pretty print terms. this would enable printing closures
+    // and neutral terms.
+    pub fn display(&self) -> DisplayVal<'e, '_> {
+        DisplayVal { val: self }
+    }
+}
 
-impl fmt::Display for Val<'_> {
+impl fmt::Display for DisplayVal<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.val {
             Val::TypeType => write!(f, "type"),
             Val::TypeNat => write!(f, "nat"),
             Val::Nat(n) => write!(f, "{n}"),
             Val::Neu(lvl) => write!(f, "?{lvl}"),
-            Val::CtorS | Val::Fun(_) => write!(f, "[fn]"),
-            Val::Pi(_, _) => write!(f, "[pi]"),
+            Val::CtorS | Val::Fun(_) => write!(f, "<Fun>"),
+            Val::Pi(_, _) => write!(f, "<Pi>"),
         }
     }
 }
