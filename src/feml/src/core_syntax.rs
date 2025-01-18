@@ -97,10 +97,14 @@ impl<'s> DisplayTermContext<'s> {
     fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Term<'s>, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
         match exp {
-            Term::Cst(c) => write!(f, "{c}"),
+            Term::Cst(c) => write!(f, "cst[{c}]"),
             Term::Var(i) => {
-                let id = &self.names[self.names.len() - i - 1];
-                write!(f, "{id}")
+                if *i >= self.names.len() {
+                    write!(f, "var[{i}]")
+                } else {
+                    let id = &self.names[self.names.len() - i - 1];
+                    write!(f, "var[{id}]")
+                }
             }
             Term::App(fun, arg) => {
                 open(f, prec, 2)?;

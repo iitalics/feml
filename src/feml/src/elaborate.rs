@@ -130,11 +130,14 @@ impl<'e> Context<'e> {
             self.unbind(arg_id, prev);
             result?
         };
-        unimplemented!("construct pi type")
-        // Ok((
-        //     core_syntax::lam(arg_id, body_tm),
-        //     value::arrow(arg_ty, ret_ty),
-        // ))
+        let ret = core_syntax::Abs {
+            id: arg_id,
+            body: reify(self.scope_depth + 1, &ret_ty),
+        };
+        Ok((
+            core_syntax::lam(arg_id, body_tm),
+            value::pi(arg_ty, ret, self.env()),
+        ))
     }
 
     fn elab_lam_check(&mut self, lam: &pst::Lambda<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
@@ -242,21 +245,32 @@ fn compatible(t1: &Type<'_>, t2: &Type<'_>) -> bool {
     }
 }
 
-// fn reify(level: usize, v: ValBox<'_>) -> TermBox<'_> {
-//     match &*v {
-//         Val::TypeType => core_syntax::cst(Constant::TypeType),
-//         Val::TypeNat => core_syntax::cst(Constant::TypeNat),
-//         Val::CtorS => core_syntax::cst(Constant::S),
-//         Val::Neu(l) => core_syntax::var(level - l),
-//         Val::Nat(n) => {
-//             let mut tm = core_syntax::cst(Constant::Z);
-//             let mut s = None;
-//             for _ in 0..*n {
-//                 let s = s.get_or_insert_with(|| core_syntax::cst(Constant::S));
-//                 tm = core_syntax::app(s.clone(), tm);
-//             }
-//             tm
-//         }
-//         _ => unimplemented!("reify {v}"),
-//     }
-// }
+fn reify<'e>(level: usize, v: &Val<'e>) -> TermBox<'e> {
+    match v {
+        Val::TypeType => core_syntax::cst(Constant::TypeType),
+        Val::TypeNat => core_syntax::cst(Constant::TypeNat),
+        Val::CtorS => core_syntax::cst(Constant::S),
+        Val::Neu(l) => core_syntax::var(level - l),
+        Val::Nat(n) => {
+            // FIXME: lol. should just have nat constants instead of this
+            let mut tm = core_syntax::cst(Constant::Z);
+            let mut s = None;
+            for _ in 0..*n {
+                let s = s.get_or_insert_with(|| core_syntax::cst(Constant::S));
+                tm = core_syntax::app(s.clone(), tm);
+            }
+            tm
+        }
+        Val::Pi(dom, rng) => {
+            let dom_tm = reify(level, dom);
+            let rng_v = apply_closure(rng, value::neu(level + 1));
+            let rng_tm = reify(level + 1, &rng_v);
+            core_syntax::pi(dom_tm, rng.id, rng_tm)
+        }
+        Val::Fun(fun) => {
+            let body_v = apply_closure(fun, value::neu(level + 1));
+            let body_tm = reify(level + 1, &body_v);
+            core_syntax::lam(fun.id, body_tm)
+        }
+    }
+}
