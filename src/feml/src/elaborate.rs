@@ -1,6 +1,7 @@
 use crate::core_syntax as stx;
 use crate::parse_tree as pst;
 use crate::token::Loc;
+use crate::value as val;
 
 use std::collections::HashMap;
 
@@ -32,23 +33,25 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Context<'s> {
-    scope: HashMap<&'s str, Binding>,
+pub struct Context<'e> {
+    scope: HashMap<&'e str, Binding>,
     scope_depth: usize,
 }
 
 struct Binding {
-    // a binding level (scope_depth - debruijn_index). this value is stable as new
-    // bindings are introduced and can be used to obtain the correct debruijn index by
-    // subtracting from scope_depth again.
+    ty: val::Type,
+    // level = (scope_depth - debruijn_index). this value is stable as new bindings are
+    // introduced and can be used to obtain the correct debruijn index by subtracting from
+    // scope_depth again.
     level: usize,
-    ty: stx::Type,
 }
 
 fn look_up_in_global_env(x: &str) -> Option<stx::Constant> {
     match x {
         "S" => Some(stx::Constant::S),
         "Z" => Some(stx::Constant::Z),
+        "nat" => Some(stx::Constant::TypeNat),
+        "type" => Some(stx::Constant::TypeType),
         _ => None,
     }
 }
@@ -64,7 +67,7 @@ impl<'s> Context<'s> {
     pub fn elab_exp_infer(
         &mut self,
         exp: &pst::Exp<'s, '_>,
-    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+    ) -> Result<(stx::Exp<'s>, val::Type)> {
         match exp {
             pst::Exp::Var(x) => self.lookup(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
@@ -77,13 +80,14 @@ impl<'s> Context<'s> {
     pub fn elab_exp_check(
         &mut self,
         exp: &pst::Exp<'s, '_>,
-        ty: &stx::Ty,
-    ) -> Result<Box<stx::Exp<'s>>> {
+        ty: val::Type,
+    ) -> Result<stx::Exp<'s>> {
         match exp {
-            pst::Exp::Lam(lam) if lam.param.is_none() => self.elab_lam_check(lam, ty),
+            pst::Exp::Lam(lam) => self.elab_lam_check(lam, ty),
             _ => {
+                // no special checking rule, fall back to inference
                 let (stx, inf_ty) = self.elab_exp_infer(exp)?;
-                if !inf_ty.compatible(ty) {
+                if !compatible(&inf_ty, &ty) {
                     return Err(Error::TypeMismatch(
                         exp.loc(),
                         ty.to_string(),
@@ -99,20 +103,18 @@ impl<'s> Context<'s> {
         &mut self,
         fun: &pst::Exp<'s, '_>,
         arg: &pst::Arg<'s, '_>,
-    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+    ) -> Result<(stx::Exp<'s>, val::Type)> {
         let (fun_stx, fun_ty) = self.elab_exp_infer(fun)?;
-        let (arg_ty, ret_ty) = match &*fun_ty {
-            stx::Ty::Arr(dom, rng) => (dom, rng),
-            _ => return Err(Error::TypeNotArrow(fun.loc(), fun_ty.to_string())),
-        };
+        let (arg_ty, ret_ty) = assert_arrow_type(fun.loc(), fun_ty)?;
         let arg_stx = self.elab_exp_check(arg, arg_ty)?;
-        Ok((Box::new(stx::Exp::App(fun_stx, arg_stx)), ret_ty.clone()))
+        let app = Box::new(stx::Ex::App(fun_stx, arg_stx));
+        Ok((app, ret_ty))
     }
 
     fn elab_lam_infer(
         &mut self,
         lam: &pst::Lambda<'s, '_>,
-    ) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+    ) -> Result<(stx::Exp<'s>, val::Type)> {
         let arg_id = lam.name.id;
         let arg_ty = match lam.param {
             Some(param) => self.elab_ty(param.ty)?,
@@ -124,68 +126,61 @@ impl<'s> Context<'s> {
             self.unbind(arg_id, prev);
             result?
         };
-        let lam = Box::new(stx::Exp::Abs(arg_id, body_stx));
-        let ty = stx::Type::new(stx::Ty::Arr(arg_ty, body_ty));
+        let lam = stx::Lam(arg_id, body_stx);
+        let lam = Box::new(stx::Ex::Lam(lam));
+        let ty = val::arrow(arg_ty, body_ty);
         Ok((lam, ty))
     }
 
     fn elab_lam_check(
         &mut self,
         lam: &pst::Lambda<'s, '_>,
-        ty: &stx::Ty,
-    ) -> Result<Box<stx::Exp<'s>>> {
+        ty: val::Type,
+    ) -> Result<stx::Exp<'s>> {
         let arg_id = lam.name.id;
-        let (arg_ty, ret_ty) = match ty {
-            stx::Ty::Arr(dom, rng) => (dom, rng),
-            _ => return Err(Error::TypeNotArrow(lam.loc(), ty.to_string())),
-        };
+        let (arg_ty, ret_ty) = assert_arrow_type(lam.loc(), ty)?;
         if let Some(param) = lam.param {
             let arg_ann_ty = self.elab_ty(param.ty)?;
-            if !ty.compatible(&arg_ann_ty) {
+            if !compatible(&arg_ty, &arg_ann_ty) {
                 return Err(Error::TypeMismatch(
-                    param.loc(),
+                    param.ty.loc(),
                     arg_ann_ty.to_string(),
-                    ty.to_string(),
+                    arg_ty.to_string(),
                 ));
             }
         }
         let body_stx = {
-            let prev = self.bind(arg_id, arg_ty.clone());
+            let prev = self.bind(arg_id, arg_ty);
             let result = self.elab_exp_check(&lam.body, ret_ty);
             self.unbind(arg_id, prev);
             result?
         };
-        Ok(Box::new(stx::Exp::Abs(arg_id, body_stx)))
+        let lam = stx::Lam(arg_id, body_stx);
+        Ok(Box::new(stx::Ex::Lam(lam)))
     }
 
-    fn lookup(&self, name: pst::Name<'s>) -> Result<(Box<stx::Exp<'s>>, stx::Type)> {
+    fn lookup(&self, name: pst::Name<'s>) -> Result<(stx::Exp<'s>, val::Type)> {
         if let Some(binding) = self.scope.get(&name.id) {
             let idx = self.scope_depth - binding.level;
-            let var = Box::new(stx::Exp::Var(idx));
+            let var = Box::new(stx::Ex::Var(idx));
             let ty = binding.ty.clone();
             return Ok((var, ty));
         }
-
         if let Some(c) = look_up_in_global_env(name.id) {
-            // Some(cst) => Ok(stx::Exp::Const(cst)),
-            // None => ,
-            let cst = Box::new(stx::Exp::Const(c));
-            let ty = c.get_type();
+            let cst = Box::new(stx::Ex::Cst(c));
+            let ty = constant_type(c);
             return Ok((cst, ty));
         }
-
         Err(Error::NotDefined(name.loc, name.id.to_string()))
     }
 
-    fn bind(&mut self, id: &'s str, ty: stx::Type) -> Option<Binding> {
+    fn bind(&mut self, id: &'s str, ty: val::Type) -> Option<Binding> {
         self.scope_depth += 1;
-        self.scope.insert(
-            id,
-            Binding {
-                level: self.scope_depth,
-                ty,
-            },
-        )
+        let binding = Binding {
+            level: self.scope_depth,
+            ty,
+        };
+        self.scope.insert(id, binding)
     }
 
     fn unbind(&mut self, id: &'s str, prev: Option<Binding>) {
@@ -195,15 +190,46 @@ impl<'s> Context<'s> {
         }
     }
 
-    pub fn elab_ty(&mut self, tyexp: &pst::Ty<'s, '_>) -> Result<stx::Type> {
+    pub fn elab_ty(&mut self, tyexp: &pst::Exp<'s, '_>) -> Result<val::Type> {
         match tyexp {
-            pst::Exp::Var(name) if name.id == "nat" => Ok(stx::Type::new(stx::Ty::Nat)),
+            pst::Exp::Var(n) if n.id == "nat" => Ok(val::type_nat()),
+            pst::Exp::Var(n) if n.id == "type" => Ok(val::type_type()),
             pst::Exp::Arr(arr) if arr.param.is_none() => {
-                let dom = self.elab_ty(arr.dom)?;
-                let rng = self.elab_ty(arr.rng)?;
-                Ok(stx::Type::new(stx::Ty::Arr(dom, rng)))
+                let dom = self.elab_ty(&arr.dom)?;
+                let rng = self.elab_ty(&arr.rng)?;
+                Ok(val::arrow(dom, rng))
             }
             _ => Err(Error::InvalidType(tyexp.loc(), tyexp.to_string())),
         }
+    }
+}
+
+fn constant_type(c: stx::Constant) -> val::Type {
+    match c {
+        stx::Constant::Z => val::type_nat(),
+        stx::Constant::S => val::arrow(val::type_nat(), val::type_nat()),
+        stx::Constant::TypeNat => val::type_type(),
+        stx::Constant::TypeType => val::type_type(),
+    }
+}
+
+fn assert_arrow_type<'e>(loc: Loc, t: val::Type) -> Result<(val::Type, val::Type)> {
+    match &*t {
+        val::Va::Arrow(dom, rng) => Ok((dom.clone(), rng.clone())),
+        _ => Err(Error::TypeNotArrow(loc, t.to_string())),
+    }
+}
+
+fn compatible(t1: &val::Type, t2: &val::Type) -> bool {
+    match (&**t1, &**t2) {
+        (val::Va::TypeType, val::Va::TypeType) => true,
+        (val::Va::TypeNat, val::Va::TypeNat) => true,
+        (val::Va::Arrow(dom1, rng1), val::Va::Arrow(dom2, rng2)) => {
+            if !compatible(dom2, dom1) {
+                return false;
+            }
+            compatible(rng1, rng2)
+        }
+        (_, _) => false,
     }
 }

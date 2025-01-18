@@ -1,4 +1,5 @@
 use crate::token::Loc;
+
 use std::fmt;
 
 pub type Allocator = bumpalo::Bump;
@@ -259,20 +260,6 @@ impl<'s, 'a> Exp<'s, 'a> {
     }
 }
 
-fn open(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
-    if prec > min_prec {
-        write!(f, "(")?;
-    }
-    Ok(())
-}
-
-fn close(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
-    if prec > min_prec {
-        write!(f, ")")?;
-    }
-    Ok(())
-}
-
 impl fmt::Display for Exp<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.display_prec(0).fmt(f)
@@ -281,6 +268,7 @@ impl fmt::Display for Exp<'_, '_> {
 
 impl fmt::Display for DisplayExp<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::pretty_print_utils::{close, open};
         match self.exp {
             Exp::Var(name) => write!(f, "{name}"),
             Exp::Arr(Arrow { dom, param, rng }) => {
@@ -344,6 +332,7 @@ impl fmt::Display for Pat<'_, '_> {
 
 impl fmt::Display for DisplayPat<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::pretty_print_utils::{close, open};
         match self.pat {
             Pat::Any(_) => write!(f, "_"),
             Pat::Var(name) => write!(f, "{name}"),

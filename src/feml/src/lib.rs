@@ -9,3 +9,21 @@ pub mod elaborate;
 
 pub mod evaluate;
 pub mod value;
+
+pub(crate) mod pretty_print_utils {
+    use std::fmt;
+
+    pub fn open(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
+        if prec > min_prec {
+            write!(f, "(")?;
+        }
+        Ok(())
+    }
+
+    pub fn close(f: &mut fmt::Formatter<'_>, prec: u32, min_prec: u32) -> fmt::Result {
+        if prec > min_prec {
+            write!(f, ")")?;
+        }
+        Ok(())
+    }
+}
