@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
@@ -8,7 +9,7 @@ pub enum Constant {
     S,
 }
 
-pub type TermBox<'s> = Box<Term<'s>>;
+pub type TermBox<'s> = Rc<Term<'s>>;
 
 #[derive(Debug)]
 pub enum Term<'s> {
@@ -22,25 +23,28 @@ pub enum Term<'s> {
     Lam(Lam<'s>),
 }
 
-#[derive(Debug)]
-pub struct Lam<'s>(pub &'s str, pub TermBox<'s>);
+#[derive(Debug, Clone)]
+pub struct Lam<'s> {
+    pub arg_id: &'s str,
+    pub body: TermBox<'s>,
+}
 
 // == Constructors ==
 
 pub fn cst(c: Constant) -> TermBox<'static> {
-    Box::new(Term::Cst(c))
+    Rc::new(Term::Cst(c))
 }
 
 pub fn var(i: usize) -> TermBox<'static> {
-    Box::new(Term::Var(i))
+    Rc::new(Term::Var(i))
 }
 
 pub fn app<'s>(fun: TermBox<'s>, arg: TermBox<'s>) -> TermBox<'s> {
-    Box::new(Term::App(fun, arg))
+    Rc::new(Term::App(fun, arg))
 }
 
-pub fn lam<'s>(id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
-    Box::new(Term::Lam(Lam(id, body)))
+pub fn lam<'s>(arg_id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
+    Rc::new(Term::Lam(Lam { arg_id, body }))
 }
 
 // == Pretty printing ==
@@ -81,10 +85,10 @@ impl<'s> DisplayTermContext<'s> {
                 self.fmt(f, arg, 3)?;
                 close(f, prec, 2)
             }
-            Term::Lam(Lam(name, body)) => {
+            Term::Lam(Lam { arg_id, body }) => {
                 open(f, prec, 0)?;
-                write!(f, "fn {name}")?;
-                self.names.push(name);
+                write!(f, "fn {arg_id}")?;
+                self.names.push(arg_id);
                 let result = write!(f, " => ")
                     .and_then(|_| self.fmt(f, body, 0))
                     .and_then(|_| close(f, prec, 0));
@@ -95,7 +99,7 @@ impl<'s> DisplayTermContext<'s> {
     }
 }
 
-impl fmt::Display for TermBox<'_> {
+impl fmt::Display for Term<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         DisplayTermContext::new().fmt(f, self, 0)
     }

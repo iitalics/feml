@@ -4,7 +4,6 @@ use std::fmt;
 use std::rc::Rc;
 
 pub type ValBox<'e> = Rc<Val<'e>>;
-pub type Type = ValBox<'static>;
 
 pub enum Val<'e> {
     // type
@@ -18,7 +17,7 @@ pub enum Val<'e> {
     // t -> s
     Arrow(ValBox<'e>, ValBox<'e>),
     // closure value
-    Abs(&'e stx::Lam<'e>, Env<'e>),
+    Abs(stx::Lam<'e>, Env<'e>),
 }
 
 #[derive(Clone)]
@@ -49,7 +48,7 @@ pub fn arrow<'e>(v1: ValBox<'e>, v2: ValBox<'e>) -> ValBox<'e> {
     ValBox::new(Val::Arrow(v1, v2))
 }
 
-pub fn abs<'e>(lam: &'e stx::Lam<'e>, env: Env<'e>) -> ValBox<'e> {
+pub fn abs<'e>(lam: stx::Lam<'e>, env: Env<'e>) -> ValBox<'e> {
     ValBox::new(Val::Abs(lam, env))
 }
 

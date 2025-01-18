@@ -54,7 +54,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (f : nat -> nat) => f Z) : (nat -> nat) -> nat;
+assert S Z : nat;
 ";
 
 fn main() -> ExitCode {
@@ -71,12 +71,11 @@ fn main() -> ExitCode {
         fn handle_decl(decl: &parse_tree::Decl<'_, '_>) -> Result<(), Error> {
             if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
                 let mut ctx = elaborate::Context::new();
-                let ty = ctx.elab_ty(&ty)?;
+                let ty = ctx.elab_type(&ty)?;
                 let exp = ctx.elab_exp_check(exp, ty.clone())?;
 
                 println!("{exp}");
-                let env = value::Env::Empty;
-                let val = evaluate(env, &exp);
+                let val = evaluate(value::empty(), exp);
                 println!("= {val} : {ty}");
             }
 

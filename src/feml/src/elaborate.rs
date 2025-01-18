@@ -1,7 +1,8 @@
 use crate::core_syntax::{self, Constant, TermBox};
+use crate::evaluate::evaluate;
 use crate::parse_tree as pst;
 use crate::token::Loc;
-use crate::value::{self, Type, Val};
+use crate::value::{self, Val, ValBox};
 
 use std::collections::HashMap;
 
@@ -34,12 +35,14 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Context<'e> {
-    scope: HashMap<&'e str, Binding>,
+    scope: HashMap<&'e str, Binding<'e>>,
     scope_depth: usize,
 }
 
-struct Binding {
-    ty: Type,
+pub type Type<'e> = ValBox<'e>;
+
+struct Binding<'e> {
+    ty: Type<'e>,
     // level = (scope_depth - debruijn_index). this value is stable as new bindings are
     // introduced and can be used to obtain the correct debruijn index by subtracting from
     // scope_depth again.
@@ -56,7 +59,7 @@ fn look_up_in_global_env(x: &str) -> Option<Constant> {
     }
 }
 
-impl<'s> Context<'s> {
+impl<'e> Context<'e> {
     pub fn new() -> Self {
         Self {
             scope: HashMap::with_capacity(32),
@@ -64,7 +67,7 @@ impl<'s> Context<'s> {
         }
     }
 
-    pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'s, '_>) -> Result<(TermBox<'s>, Type)> {
+    pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'e, '_>) -> Result<(TermBox<'e>, Type<'e>)> {
         match exp {
             pst::Exp::Var(x) => self.lookup(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
@@ -74,7 +77,7 @@ impl<'s> Context<'s> {
         }
     }
 
-    pub fn elab_exp_check(&mut self, exp: &pst::Exp<'s, '_>, ty: Type) -> Result<TermBox<'s>> {
+    pub fn elab_exp_check(&mut self, exp: &pst::Exp<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
         match exp {
             pst::Exp::Lam(lam) => self.elab_lam_check(lam, ty),
             _ => {
@@ -92,21 +95,27 @@ impl<'s> Context<'s> {
         }
     }
 
+    pub fn elab_type(&mut self, ty_exp: &pst::Exp<'e, '_>) -> Result<Type<'e>> {
+        let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
+        let ty = evaluate(value::empty(), ty_tm);
+        Ok(ty)
+    }
+
     fn elab_app_infer(
         &mut self,
-        fun: &pst::Exp<'s, '_>,
-        arg: &pst::Arg<'s, '_>,
-    ) -> Result<(TermBox<'s>, Type)> {
+        fun: &pst::Exp<'e, '_>,
+        arg: &pst::Arg<'e, '_>,
+    ) -> Result<(TermBox<'e>, Type<'e>)> {
         let (fun_tm, fun_ty) = self.elab_exp_infer(fun)?;
         let (arg_ty, ret_ty) = assert_arrow_type(fun.loc(), fun_ty)?;
         let arg_tm = self.elab_exp_check(arg, arg_ty)?;
         Ok((core_syntax::app(fun_tm, arg_tm), ret_ty))
     }
 
-    fn elab_lam_infer(&mut self, lam: &pst::Lambda<'s, '_>) -> Result<(TermBox<'s>, Type)> {
+    fn elab_lam_infer(&mut self, lam: &pst::Lambda<'e, '_>) -> Result<(TermBox<'e>, Type<'e>)> {
         let arg_id = lam.name.id;
         let arg_ty = match lam.param {
-            Some(param) => self.elab_ty(param.ty)?,
+            Some(param) => self.elab_type(param.ty)?,
             None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
         };
         let (body_tm, body_ty) = {
@@ -121,11 +130,11 @@ impl<'s> Context<'s> {
         ))
     }
 
-    fn elab_lam_check(&mut self, lam: &pst::Lambda<'s, '_>, ty: Type) -> Result<TermBox<'s>> {
+    fn elab_lam_check(&mut self, lam: &pst::Lambda<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
         let arg_id = lam.name.id;
         let (arg_ty, ret_ty) = assert_arrow_type(lam.loc(), ty)?;
         if let Some(param) = lam.param {
-            let arg_ann_ty = self.elab_ty(param.ty)?;
+            let arg_ann_ty = self.elab_type(param.ty)?;
             if !compatible(&arg_ty, &arg_ann_ty) {
                 return Err(Error::TypeMismatch(
                     param.ty.loc(),
@@ -143,7 +152,7 @@ impl<'s> Context<'s> {
         Ok(core_syntax::lam(arg_id, body_tm))
     }
 
-    fn lookup(&self, name: pst::Name<'s>) -> Result<(TermBox<'s>, Type)> {
+    fn lookup(&self, name: pst::Name<'e>) -> Result<(TermBox<'e>, Type<'e>)> {
         if let Some(binding) = self.scope.get(&name.id) {
             let idx = self.scope_depth - binding.level;
             return Ok((core_syntax::var(idx), binding.ty.clone()));
@@ -154,7 +163,7 @@ impl<'s> Context<'s> {
         Err(Error::NotDefined(name.loc, name.id.to_string()))
     }
 
-    fn bind(&mut self, id: &'s str, ty: Type) -> Option<Binding> {
+    fn bind(&mut self, id: &'e str, ty: Type<'e>) -> Option<Binding<'e>> {
         self.scope_depth += 1;
         let binding = Binding {
             level: self.scope_depth,
@@ -163,28 +172,15 @@ impl<'s> Context<'s> {
         self.scope.insert(id, binding)
     }
 
-    fn unbind(&mut self, id: &'s str, prev: Option<Binding>) {
+    fn unbind(&mut self, id: &'e str, prev: Option<Binding<'e>>) {
         self.scope_depth -= 1;
         if let Some(prev_binding) = prev {
             self.scope.insert(id, prev_binding);
         }
     }
-
-    pub fn elab_ty(&mut self, tyexp: &pst::Exp<'s, '_>) -> Result<Type> {
-        match tyexp {
-            pst::Exp::Var(n) if n.id == "nat" => Ok(value::type_nat()),
-            pst::Exp::Var(n) if n.id == "type" => Ok(value::type_type()),
-            pst::Exp::Arr(arr) if arr.param.is_none() => {
-                let dom = self.elab_ty(&arr.dom)?;
-                let rng = self.elab_ty(&arr.rng)?;
-                Ok(value::arrow(dom, rng))
-            }
-            _ => Err(Error::InvalidType(tyexp.loc(), tyexp.to_string())),
-        }
-    }
 }
 
-fn constant_type(c: Constant) -> Type {
+fn constant_type(c: Constant) -> Type<'static> {
     match c {
         Constant::Z => value::type_nat(),
         Constant::S => value::arrow(value::type_nat(), value::type_nat()),
@@ -193,14 +189,14 @@ fn constant_type(c: Constant) -> Type {
     }
 }
 
-fn assert_arrow_type<'e>(loc: Loc, t: Type) -> Result<(Type, Type)> {
+fn assert_arrow_type<'e>(loc: Loc, t: Type<'e>) -> Result<(Type<'e>, Type<'e>)> {
     match &*t {
         Val::Arrow(dom, rng) => Ok((dom.clone(), rng.clone())),
         _ => Err(Error::TypeNotArrow(loc, t.to_string())),
     }
 }
 
-fn compatible(t1: &Type, t2: &Type) -> bool {
+fn compatible(t1: &Type<'_>, t2: &Type<'_>) -> bool {
     match (&**t1, &**t2) {
         (Val::TypeType, Val::TypeType) => true,
         (Val::TypeNat, Val::TypeNat) => true,
