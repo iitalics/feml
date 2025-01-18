@@ -21,12 +21,21 @@ pub enum Term<'s> {
     App(TermBox<'s>, TermBox<'s>),
     // fn x => e
     Lam(Lam<'s>),
+    // t -> s
+    Arr(Arrow<'s>),
 }
 
 #[derive(Debug, Clone)]
 pub struct Lam<'s> {
     pub arg_id: &'s str,
     pub body: TermBox<'s>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Arrow<'s> {
+    // TODO: pi type
+    pub dom: TermBox<'s>,
+    pub rng: TermBox<'s>,
 }
 
 // == Constructors ==
@@ -45,6 +54,10 @@ pub fn app<'s>(fun: TermBox<'s>, arg: TermBox<'s>) -> TermBox<'s> {
 
 pub fn lam<'s>(arg_id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
     Rc::new(Term::Lam(Lam { arg_id, body }))
+}
+
+pub fn arrow<'s>(dom: TermBox<'s>, rng: TermBox<'s>) -> TermBox<'s> {
+    Rc::new(Term::Arr(Arrow { dom, rng }))
 }
 
 // == Pretty printing ==
@@ -94,6 +107,13 @@ impl<'s> DisplayTermContext<'s> {
                     .and_then(|_| close(f, prec, 0));
                 self.names.pop();
                 result
+            }
+            Term::Arr(Arrow { dom, rng }) => {
+                open(f, prec, 1)?;
+                self.fmt(f, dom, 2)?;
+                write!(f, " -> ")?;
+                self.fmt(f, rng, 1)?;
+                close(f, prec, 1)
             }
         }
     }

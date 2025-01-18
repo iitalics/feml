@@ -72,8 +72,8 @@ impl<'e> Context<'e> {
             pst::Exp::Var(x) => self.lookup(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
             pst::Exp::Lam(lam) => self.elab_lam_infer(lam),
-            pst::Exp::Arr { .. } => unimplemented!("elab Arr"),
-            pst::Exp::Mat { .. } => unimplemented!("elab Mat"),
+            pst::Exp::Arr(arr) => self.elab_arr(arr).map(|t| (t, value::type_type())),
+            pst::Exp::Mat { .. } => unimplemented!("match expressions"),
         }
     }
 
@@ -97,6 +97,7 @@ impl<'e> Context<'e> {
 
     pub fn elab_type(&mut self, ty_exp: &pst::Exp<'e, '_>) -> Result<Type<'e>> {
         let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
+        // TODO: introduce neutral terms into the environment
         let ty = evaluate(value::empty(), ty_tm);
         Ok(ty)
     }
@@ -120,7 +121,7 @@ impl<'e> Context<'e> {
         };
         let (body_tm, body_ty) = {
             let prev = self.bind(arg_id, arg_ty.clone());
-            let result = self.elab_exp_infer(&lam.body);
+            let result = self.elab_exp_infer(lam.body);
             self.unbind(arg_id, prev);
             result?
         };
@@ -145,11 +146,20 @@ impl<'e> Context<'e> {
         }
         let body_tm = {
             let prev = self.bind(arg_id, arg_ty);
-            let result = self.elab_exp_check(&lam.body, ret_ty);
+            let result = self.elab_exp_check(lam.body, ret_ty);
             self.unbind(arg_id, prev);
             result?
         };
         Ok(core_syntax::lam(arg_id, body_tm))
+    }
+
+    fn elab_arr(&mut self, arr: &pst::Arrow<'e, '_>) -> Result<TermBox<'e>> {
+        if arr.param.is_some() {
+            unimplemented!("dependent arrows")
+        }
+        let dom = self.elab_exp_check(arr.dom, value::type_type())?;
+        let rng = self.elab_exp_check(arr.dom, value::type_type())?;
+        Ok(core_syntax::arrow(dom, rng))
     }
 
     fn lookup(&self, name: pst::Name<'e>) -> Result<(TermBox<'e>, Type<'e>)> {
@@ -189,7 +199,7 @@ fn constant_type(c: Constant) -> Type<'static> {
     }
 }
 
-fn assert_arrow_type<'e>(loc: Loc, t: Type<'e>) -> Result<(Type<'e>, Type<'e>)> {
+fn assert_arrow_type(loc: Loc, t: Type<'_>) -> Result<(Type<'_>, Type<'_>)> {
     match &*t {
         Val::Arrow(dom, rng) => Ok((dom.clone(), rng.clone())),
         _ => Err(Error::TypeNotArrow(loc, t.to_string())),

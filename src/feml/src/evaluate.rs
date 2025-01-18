@@ -9,8 +9,12 @@ pub fn evaluate<'e>(env: Env<'e>, exp: TermBox<'e>) -> ValBox<'e> {
         Term::Cst(TypeNat) => value::type_nat(),
         Term::Cst(Z) => value::nat(0),
         Term::Cst(S) => value::ctor_s(),
-        Term::App(f, a) => apply(evaluate(env.clone(), f.clone()), evaluate(env, a.clone())),
         Term::Lam(lam) => value::abs(lam.clone(), env),
+        Term::Arr(arr) => value::arrow(
+            evaluate(env.clone(), arr.dom.clone()),
+            evaluate(env, arr.rng.clone()),
+        ),
+        Term::App(fun, arg) => apply(evaluate(env.clone(), fun.clone()), evaluate(env, arg.clone())),
     }
 }
 
