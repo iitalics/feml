@@ -16,8 +16,6 @@ pub enum Error {
     TypeNotArrow(Loc, String),
     #[error("unable to infer type for {1}")]
     NoLambdaInfer(Loc, String),
-    #[error("invalid type expression: {1}")]
-    InvalidType(Loc, String),
 }
 
 impl Error {
@@ -26,8 +24,7 @@ impl Error {
             Self::NotDefined(loc, _)
             | Self::TypeMismatch(loc, _, _)
             | Self::TypeNotArrow(loc, _)
-            | Self::NoLambdaInfer(loc, _)
-            | Self::InvalidType(loc, _) => *loc,
+            | Self::NoLambdaInfer(loc, _) => *loc,
         }
     }
 }
