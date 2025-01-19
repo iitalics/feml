@@ -1,5 +1,5 @@
 use crate::core_syntax as stx;
-use crate::intern::Symbol;
+use crate::intern::{self, Symbol};
 
 use std::fmt;
 use std::rc::Rc;
@@ -7,14 +7,8 @@ use std::rc::Rc;
 pub type ValBox = Rc<Val>;
 
 pub enum Val {
-    // type
-    TypeType,
-    // nat
-    TypeNat,
-    // nat value
-    Nat(u64),
-    // nat S constructor
-    CtorS,
+    // constructors
+    Con(Symbol, Vec<ValBox>),
     // function value
     Fun(Clos),
     // function type
@@ -67,20 +61,14 @@ impl Env {
 
 // == Constructors ==
 
-pub fn type_type() -> ValBox {
-    ValBox::new(Val::TypeType)
+pub fn con(sym: Symbol) -> ValBox {
+    ValBox::new(Val::Con(sym, vec![]))
 }
 
-pub fn type_nat() -> ValBox {
-    ValBox::new(Val::TypeNat)
-}
-
-pub fn nat(n: u64) -> ValBox {
-    ValBox::new(Val::Nat(n))
-}
-
-pub fn ctor_s() -> ValBox {
-    ValBox::new(Val::CtorS)
+pub fn con_extend(sym: Symbol, args: &[ValBox], new_arg: ValBox) -> ValBox {
+    let mut args = Vec::from_iter(args.iter().cloned());
+    args.push(new_arg);
+    ValBox::new(Val::Con(sym, args))
 }
 
 pub fn pi(dom: ValBox, rng: stx::Abs, env: Env) -> ValBox {
@@ -119,27 +107,43 @@ pub fn env_cons(v: ValBox, env: Env) -> Env {
 
 // == Pretty printing ==
 
-pub struct DisplayVal<'v> {
+pub struct DisplayVal<'s, 'v> {
     val: &'v Val,
+    intern_pool: &'s intern::Pool,
+    prec: u32,
 }
 
 impl Val {
     // FIXME: pretty printing values is not really appropriate. you should reify values
     // back into terms and then pretty print terms. this would enable printing closures
     // and neutral terms.
-    pub fn display(&self) -> DisplayVal<'_> {
-        DisplayVal { val: self }
+    pub fn display<'s>(&self, intern_pool: &'s intern::Pool) -> DisplayVal<'s, '_> {
+        self.display_prec(intern_pool, 0)
+    }
+
+    pub fn display_prec<'s>(&self, intern_pool: &'s intern::Pool, prec: u32) -> DisplayVal<'s, '_> {
+        DisplayVal {
+            val: self,
+            intern_pool,
+            prec,
+        }
     }
 }
 
-impl fmt::Display for DisplayVal<'_> {
+impl fmt::Display for DisplayVal<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::pretty_print_utils::{close, open};
         match self.val {
-            Val::TypeType => write!(f, "type"),
-            Val::TypeNat => write!(f, "nat"),
-            Val::Nat(n) => write!(f, "{n}"),
+            Val::Con(c, args) => {
+                open(f, self.prec, 2)?;
+                write!(f, "{}", self.intern_pool.get(*c))?;
+                for arg in args {
+                    write!(f, " {}", arg.display_prec(self.intern_pool, 3))?;
+                }
+                close(f, self.prec, 2)
+            }
             Val::Neu(lvl) => write!(f, "?{lvl}"),
-            Val::CtorS | Val::Fun(_) => write!(f, "<Fun>"),
+            Val::Fun(_) => write!(f, "<Fun>"),
             Val::Pi(_, _) => write!(f, "<Pi>"),
         }
     }

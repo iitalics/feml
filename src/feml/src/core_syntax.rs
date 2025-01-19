@@ -4,20 +4,12 @@ use std::borrow::Cow;
 use std::fmt;
 use std::rc::Rc;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Constant {
-    TypeType,
-    TypeNat,
-    Z,
-    S,
-}
-
 pub type TermBox = Rc<Term>;
 
 #[derive(Debug)]
 pub enum Term {
     // c
-    Cst(Constant),
+    Con(Con),
     // x
     Var(usize),
     // f a
@@ -28,6 +20,8 @@ pub enum Term {
     Pi(TermBox, Abs),
 }
 
+pub type Con = Symbol;
+
 #[derive(Debug, Clone)]
 pub struct Abs {
     pub param: Symbol,
@@ -37,7 +31,7 @@ pub struct Abs {
 impl Term {
     pub fn alpha_eq(&self, rhs: &Term) -> bool {
         match (self, rhs) {
-            (Term::Cst(c1), Term::Cst(c2)) => *c1 == *c2,
+            (Term::Con(c1), Term::Con(c2)) => *c1 == *c2,
             (Term::Var(i1), Term::Var(i2)) => *i1 == *i2,
             (Term::App(f1, a1), Term::App(f2, a2)) => f1.alpha_eq(f2) && a1.alpha_eq(a2),
             (Term::Lam(b1), Term::Lam(b2)) => b1.alpha_eq(b2),
@@ -55,8 +49,8 @@ impl Abs {
 
 // == Constructors ==
 
-pub fn cst(c: Constant) -> TermBox {
-    Rc::new(Term::Cst(c))
+pub fn con(c: Con) -> TermBox {
+    Rc::new(Term::Con(c))
 }
 
 pub fn var(i: usize) -> TermBox {
@@ -76,17 +70,6 @@ pub fn pi(dom: TermBox, param: Symbol, rng: TermBox) -> TermBox {
 }
 
 // == Pretty printing ==
-
-impl fmt::Display for Constant {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TypeNat => write!(f, "nat"),
-            Self::TypeType => write!(f, "type"),
-            Self::Z => write!(f, "Z"),
-            Self::S => write!(f, "S"),
-        }
-    }
-}
 
 pub struct DisplayTerm<'s, 't> {
     intern_pool: &'s intern::Pool,
@@ -143,7 +126,7 @@ impl<'s> DisplayTermContext<'s> {
     fn fmt(&mut self, f: &mut fmt::Formatter<'_>, term: &Term, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
         match term {
-            Term::Cst(c) => write!(f, "{c}"),
+            Term::Con(c) => write!(f, "{}", self.intern_pool.get(*c)),
             Term::Var(i) => {
                 if *i >= self.names.len() {
                     // FIXME: allow passing initial context of names for pretty printing

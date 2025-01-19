@@ -54,7 +54,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (A : type) => fn (x : A) => x) nat : nat -> nat;
+assert (fn (n : nat) => S (S n)) Z : nat;
 ";
 
 fn main() -> ExitCode {
@@ -75,7 +75,7 @@ fn main() -> ExitCode {
                 let tm = ctx.elab_exp_check(exp, ty.clone())?;
                 println!(":: {}", ctx.pretty_term(&tm));
                 let val = evaluate(value::env_empty(), tm);
-                println!("=> {} : {}", val.display(), ctx.pretty_value(&ty));
+                println!("=> {} : {}", ctx.pretty_value(&val), ctx.pretty_value(&ty));
             }
 
             Ok(())

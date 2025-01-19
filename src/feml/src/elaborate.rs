@@ -1,4 +1,4 @@
-use crate::core_syntax::{self, Constant, Term, TermBox};
+use crate::core_syntax::{self, Term, TermBox};
 use crate::evaluate::{apply_closure, evaluate};
 use crate::intern::{self, Symbol};
 use crate::parse_tree as pst;
@@ -37,6 +37,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Context {
     intern_pool: intern::Pool,
+    type_type: Type,
+    constants: HashMap<Symbol, Type>,
     scope: HashMap<Symbol, Binding>,
     scope_depth: usize,
 }
@@ -52,23 +54,36 @@ struct Binding {
     level: usize,
 }
 
-fn look_up_in_global_env(x: &str) -> Option<Constant> {
-    match x {
-        "S" => Some(Constant::S),
-        "Z" => Some(Constant::Z),
-        "nat" => Some(Constant::TypeNat),
-        "type" => Some(Constant::TypeType),
-        _ => None,
-    }
-}
-
 impl Context {
     pub fn new() -> Self {
+        let intern_pool = intern::Pool::new();
+
+        // initialize constants
+        let sym_type = intern_pool.intern("type");
+        let sym_nat = intern_pool.intern("nat");
+        let type_type = value::con(sym_type);
+        let type_nat = value::con(sym_nat);
+        let mut constants = HashMap::new();
+        constants.insert(sym_type, type_type.clone()); // type : type
+        constants.insert(sym_nat, type_type.clone()); // nat : type
+        constants.insert(intern_pool.intern("Z"), type_nat.clone()); // Z : nat
+        constants.insert(
+            // S : nat -> nat
+            intern_pool.intern("S"),
+            value::arrow(type_nat.clone(), type_nat.clone()),
+        );
+
         Self {
-            intern_pool: intern::Pool::new(),
+            intern_pool,
+            type_type,
+            constants,
             scope: HashMap::with_capacity(32),
             scope_depth: 0,
         }
+    }
+
+    fn type_type(&self) -> Type {
+        self.type_type.clone()
     }
 
     fn env(&self) -> value::Env {
@@ -80,7 +95,7 @@ impl Context {
             pst::Exp::Var(x) => self.lookup(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
             pst::Exp::Lam(lam) => self.elab_lam_infer(lam),
-            pst::Exp::Arr(arr) => self.elab_arr(arr).map(|t| (t, value::type_type())),
+            pst::Exp::Arr(arr) => self.elab_arr(arr).map(|t| (t, self.type_type())),
             pst::Exp::Mat { .. } => unimplemented!("match expressions"),
         }
     }
@@ -104,7 +119,7 @@ impl Context {
     }
 
     pub fn elab_type(&mut self, ty_exp: &pst::Exp<'_, '_>) -> Result<Type> {
-        let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
+        let ty_tm = self.elab_exp_check(ty_exp, self.type_type())?;
         let ty = evaluate(self.env(), ty_tm);
         Ok(ty)
     }
@@ -175,14 +190,14 @@ impl Context {
     }
 
     fn elab_arr(&mut self, arr: &pst::Arrow<'_, '_>) -> Result<TermBox> {
-        let dom = self.elab_exp_check(arr.dom, value::type_type())?;
+        let dom = self.elab_exp_check(arr.dom, self.type_type())?;
         let dom_ty = evaluate(self.env(), dom.clone());
         match arr.param {
             Some(param) => {
                 let param_sym = param.name.intern(&self.intern_pool);
                 let rng = {
                     let prev = self.bind(param_sym, dom_ty);
-                    let result = self.elab_exp_check(arr.rng, value::type_type());
+                    let result = self.elab_exp_check(arr.rng, self.type_type());
                     self.unbind(prev);
                     result?
                 };
@@ -192,7 +207,7 @@ impl Context {
                 let rng = {
                     self.scope_depth += 1;
                     //self.bind_without_name(None);
-                    let result = self.elab_exp_check(arr.rng, value::type_type());
+                    let result = self.elab_exp_check(arr.rng, self.type_type());
                     self.scope_depth -= 1;
                     //self.unbind(None);
                     result?
@@ -208,8 +223,8 @@ impl Context {
             let idx = self.scope_depth - binding.level;
             return Ok((core_syntax::var(idx), binding.ty.clone()));
         }
-        if let Some(c) = look_up_in_global_env(name.id) {
-            return Ok((core_syntax::cst(c), constant_type(c)));
+        if let Some(con_ty) = self.constants.get(&sym) {
+            return Ok((core_syntax::con(sym), con_ty.clone()));
         }
         Err(Error::NotDefined(name.loc, name.id.to_string()))
     }
@@ -248,32 +263,18 @@ impl Context {
     }
 }
 
-fn constant_type(c: Constant) -> Type {
-    match c {
-        Constant::Z => value::type_nat(),
-        Constant::S => value::arrow(value::type_nat(), value::type_nat()),
-        Constant::TypeNat => value::type_type(),
-        Constant::TypeType => value::type_type(),
-    }
-}
-
 fn reify(level: usize, v: &Val) -> TermBox {
     // TODO: type-based reification for proper eta-expansion
     match v {
-        Val::TypeType => core_syntax::cst(Constant::TypeType),
-        Val::TypeNat => core_syntax::cst(Constant::TypeNat),
-        Val::CtorS => core_syntax::cst(Constant::S),
-        Val::Neu(l) => core_syntax::var(level - l),
-        Val::Nat(n) => {
-            // FIXME: lol. should just have nat constants instead of this
-            let mut tm = core_syntax::cst(Constant::Z);
-            let mut s = None;
-            for _ in 0..*n {
-                let s = s.get_or_insert_with(|| core_syntax::cst(Constant::S));
-                tm = core_syntax::app(s.clone(), tm);
+        Val::Con(c, vs) => {
+            let mut tm = core_syntax::con(*c);
+            for v in vs {
+                let arg = reify(level, v);
+                tm = core_syntax::app(tm, arg);
             }
             tm
         }
+        Val::Neu(l) => core_syntax::var(level - l),
         Val::Pi(dom, rng) => {
             let dom_tm = reify(level, dom);
             let rng_v = apply_closure(rng, value::neu(level + 1));

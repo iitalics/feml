@@ -1,14 +1,10 @@
-use crate::core_syntax::{self, Term, TermBox};
+use crate::core_syntax::{Term, TermBox};
 use crate::value::{self, Clos, Env, Val, ValBox};
 
 pub fn evaluate(env: Env, exp: TermBox) -> ValBox {
-    use core_syntax::Constant::*;
     match &*exp {
+        Term::Con(c) => value::con(*c),
         Term::Var(i) => env.nth(*i),
-        Term::Cst(TypeType) => value::type_type(),
-        Term::Cst(TypeNat) => value::type_nat(),
-        Term::Cst(Z) => value::nat(0),
-        Term::Cst(S) => value::ctor_s(),
         Term::Lam(lam) => {
             let lam = lam.clone();
             value::fun(lam, env)
@@ -29,10 +25,7 @@ pub fn evaluate(env: Env, exp: TermBox) -> ValBox {
 pub fn apply(fun: ValBox, arg: ValBox) -> ValBox {
     match &*fun {
         Val::Fun(clos) => apply_closure(clos, arg),
-        Val::CtorS => match &*arg {
-            Val::Nat(n) => value::nat(n.checked_add(1).expect("successor overflow")),
-            _ => panic!("bad argument to S, expected nat"),
-        },
+        Val::Con(c, args) => value::con_extend(*c, args, arg),
         _ => panic!("invalid function application"),
     }
 }
