@@ -1,7 +1,7 @@
 use crate::core_syntax::{self, Term, TermBox};
 use crate::value::{self, Clos, Env, Val, ValBox};
 
-pub fn evaluate<'e>(env: Env<'e>, exp: TermBox<'e>) -> ValBox<'e> {
+pub fn evaluate(env: Env, exp: TermBox) -> ValBox {
     use core_syntax::Constant::*;
     match &*exp {
         Term::Var(i) => env.nth(*i),
@@ -26,7 +26,7 @@ pub fn evaluate<'e>(env: Env<'e>, exp: TermBox<'e>) -> ValBox<'e> {
     }
 }
 
-pub fn apply<'e>(fun: ValBox<'e>, arg: ValBox<'e>) -> ValBox<'e> {
+pub fn apply(fun: ValBox, arg: ValBox) -> ValBox {
     match &*fun {
         Val::Fun(clos) => apply_closure(clos, arg),
         Val::CtorS => match &*arg {
@@ -37,7 +37,7 @@ pub fn apply<'e>(fun: ValBox<'e>, arg: ValBox<'e>) -> ValBox<'e> {
     }
 }
 
-pub fn apply_closure<'e>(clos: &Clos<'e>, arg: ValBox<'e>) -> ValBox<'e> {
+pub fn apply_closure(clos: &Clos, arg: ValBox) -> ValBox {
     let env = value::env_cons(arg, clos.env.clone());
     evaluate(env, clos.exp.clone())
 }

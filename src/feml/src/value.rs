@@ -1,11 +1,12 @@
 use crate::core_syntax as stx;
+use crate::intern::Symbol;
 
 use std::fmt;
 use std::rc::Rc;
 
-pub type ValBox<'e> = Rc<Val<'e>>;
+pub type ValBox = Rc<Val>;
 
-pub enum Val<'e> {
+pub enum Val {
     // type
     TypeType,
     // nat
@@ -15,24 +16,24 @@ pub enum Val<'e> {
     // nat S constructor
     CtorS,
     // function value
-    Fun(Clos<'e>),
+    Fun(Clos),
     // function type
-    Pi(ValBox<'e>, Clos<'e>),
+    Pi(ValBox, Clos),
     // neutral
     Neu(usize),
 }
 
 #[derive(Clone)]
-pub struct Clos<'e> {
-    pub id: &'e str,
-    pub exp: stx::TermBox<'e>,
-    pub env: Env<'e>,
+pub struct Clos {
+    pub sym: Symbol,
+    pub exp: stx::TermBox,
+    pub env: Env,
 }
 
-impl<'e> Clos<'e> {
-    fn new(abs: stx::Abs<'e>, env: Env<'e>) -> Self {
+impl Clos {
+    fn new(abs: stx::Abs, env: Env) -> Self {
         Self {
-            id: abs.id,
+            sym: abs.param,
             exp: abs.body,
             env,
         }
@@ -40,13 +41,13 @@ impl<'e> Clos<'e> {
 }
 
 #[derive(Clone)]
-pub enum Env<'e> {
+pub enum Env {
     Neutral(usize),
-    Cons(ValBox<'e>, Rc<Env<'e>>),
+    Cons(ValBox, Rc<Env>),
 }
 
-impl<'e> Env<'e> {
-    pub fn nth(&self, mut i: usize) -> ValBox<'e> {
+impl Env {
+    pub fn nth(&self, mut i: usize) -> ValBox {
         let mut env = self;
         loop {
             match (env, i) {
@@ -66,72 +67,72 @@ impl<'e> Env<'e> {
 
 // == Constructors ==
 
-pub fn type_type() -> ValBox<'static> {
+pub fn type_type() -> ValBox {
     ValBox::new(Val::TypeType)
 }
 
-pub fn type_nat() -> ValBox<'static> {
+pub fn type_nat() -> ValBox {
     ValBox::new(Val::TypeNat)
 }
 
-pub fn nat(n: u64) -> ValBox<'static> {
+pub fn nat(n: u64) -> ValBox {
     ValBox::new(Val::Nat(n))
 }
 
-pub fn ctor_s() -> ValBox<'static> {
+pub fn ctor_s() -> ValBox {
     ValBox::new(Val::CtorS)
 }
 
-pub fn pi<'e>(dom: ValBox<'e>, rng: stx::Abs<'e>, env: Env<'e>) -> ValBox<'e> {
+pub fn pi(dom: ValBox, rng: stx::Abs, env: Env) -> ValBox {
     ValBox::new(Val::Pi(dom, Clos::new(rng, env)))
 }
 
-pub fn arrow<'e>(dom: ValBox<'e>, rng: ValBox<'e>) -> ValBox<'e> {
+pub fn arrow(dom: ValBox, rng: ValBox) -> ValBox {
     // (T -> U) == Pi (_ : T). U
     let env = env_cons(rng, env_empty());
     let rng = stx::Abs {
-        id: "_",
+        param: Symbol::UNDERSCORE,
         body: stx::var(1),
     };
     pi(dom, rng, env)
 }
 
-pub fn fun<'e>(lam: stx::Abs<'e>, env: Env<'e>) -> ValBox<'e> {
+pub fn fun(lam: stx::Abs, env: Env) -> ValBox {
     ValBox::new(Val::Fun(Clos::new(lam, env)))
 }
 
-pub fn neu(lvl: usize) -> ValBox<'static> {
+pub fn neu(lvl: usize) -> ValBox {
     ValBox::new(Val::Neu(lvl))
 }
 
-pub fn env_empty() -> Env<'static> {
+pub fn env_empty() -> Env {
     env_neutral(0)
 }
 
-pub fn env_neutral(n: usize) -> Env<'static> {
+pub fn env_neutral(n: usize) -> Env {
     Env::Neutral(n)
 }
 
-pub fn env_cons<'e>(v: ValBox<'e>, env: Env<'e>) -> Env<'e> {
+pub fn env_cons(v: ValBox, env: Env) -> Env {
     Env::Cons(v, Rc::new(env))
 }
 
 // == Pretty printing ==
 
-pub struct DisplayVal<'e, 'v> {
-    val: &'v Val<'e>,
+pub struct DisplayVal<'v> {
+    val: &'v Val,
 }
 
-impl<'e> Val<'e> {
+impl Val {
     // FIXME: pretty printing values is not really appropriate. you should reify values
     // back into terms and then pretty print terms. this would enable printing closures
     // and neutral terms.
-    pub fn display(&self) -> DisplayVal<'e, '_> {
+    pub fn display(&self) -> DisplayVal<'_> {
         DisplayVal { val: self }
     }
 }
 
-impl fmt::Display for DisplayVal<'_, '_> {
+impl fmt::Display for DisplayVal<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.val {
             Val::TypeType => write!(f, "type"),

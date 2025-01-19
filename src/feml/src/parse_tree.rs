@@ -1,3 +1,4 @@
+use crate::intern;
 use crate::token::Loc;
 
 use std::fmt;
@@ -32,6 +33,14 @@ impl<'s> Name<'s> {
             loc,
             id,
             is_operator: true,
+        }
+    }
+
+    pub fn intern(&self, pool: &intern::Pool) -> intern::Symbol {
+        if self.is_operator {
+            pool.intern(&format!("({})", self.id))
+        } else {
+            pool.intern(self.id)
         }
     }
 }

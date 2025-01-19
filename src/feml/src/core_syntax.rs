@@ -1,3 +1,5 @@
+use crate::intern::{self, Symbol};
+
 use std::borrow::Cow;
 use std::fmt;
 use std::rc::Rc;
@@ -10,30 +12,30 @@ pub enum Constant {
     S,
 }
 
-pub type TermBox<'s> = Rc<Term<'s>>;
+pub type TermBox = Rc<Term>;
 
 #[derive(Debug)]
-pub enum Term<'s> {
+pub enum Term {
     // c
     Cst(Constant),
     // x
     Var(usize),
     // f a
-    App(TermBox<'s>, TermBox<'s>),
+    App(TermBox, TermBox),
     // fn x => e
-    Lam(Abs<'s>),
+    Lam(Abs),
     // (x : t) -> s
-    Pi(TermBox<'s>, Abs<'s>),
+    Pi(TermBox, Abs),
 }
 
 #[derive(Debug, Clone)]
-pub struct Abs<'s> {
-    pub id: &'s str, // only for pretty printing
-    pub body: TermBox<'s>,
+pub struct Abs {
+    pub param: Symbol,
+    pub body: TermBox,
 }
 
-impl Term<'_> {
-    pub fn alpha_eq(&self, rhs: &Term<'_>) -> bool {
+impl Term {
+    pub fn alpha_eq(&self, rhs: &Term) -> bool {
         match (self, rhs) {
             (Term::Cst(c1), Term::Cst(c2)) => *c1 == *c2,
             (Term::Var(i1), Term::Var(i2)) => *i1 == *i2,
@@ -45,32 +47,32 @@ impl Term<'_> {
     }
 }
 
-impl Abs<'_> {
-    pub fn alpha_eq(&self, rhs: &Abs<'_>) -> bool {
+impl Abs {
+    pub fn alpha_eq(&self, rhs: &Abs) -> bool {
         self.body.alpha_eq(&rhs.body)
     }
 }
 
 // == Constructors ==
 
-pub fn cst(c: Constant) -> TermBox<'static> {
+pub fn cst(c: Constant) -> TermBox {
     Rc::new(Term::Cst(c))
 }
 
-pub fn var(i: usize) -> TermBox<'static> {
+pub fn var(i: usize) -> TermBox {
     Rc::new(Term::Var(i))
 }
 
-pub fn app<'s>(fun: TermBox<'s>, arg: TermBox<'s>) -> TermBox<'s> {
+pub fn app(fun: TermBox, arg: TermBox) -> TermBox {
     Rc::new(Term::App(fun, arg))
 }
 
-pub fn lam<'s>(id: &'s str, body: TermBox<'s>) -> TermBox<'s> {
-    Rc::new(Term::Lam(Abs { id, body }))
+pub fn lam(param: Symbol, body: TermBox) -> TermBox {
+    Rc::new(Term::Lam(Abs { param, body }))
 }
 
-pub fn pi<'s>(dom: TermBox<'s>, id: &'s str, rng: TermBox<'s>) -> TermBox<'s> {
-    Rc::new(Term::Pi(dom, Abs { id, body: rng }))
+pub fn pi(dom: TermBox, param: Symbol, rng: TermBox) -> TermBox {
+    Rc::new(Term::Pi(dom, Abs { param, body: rng }))
 }
 
 // == Pretty printing ==
@@ -86,18 +88,43 @@ impl fmt::Display for Constant {
     }
 }
 
+pub struct DisplayTerm<'s, 't> {
+    intern_pool: &'s intern::Pool,
+    term: &'t Term,
+}
+
+impl Term {
+    pub fn display<'s>(&self, intern_pool: &'s intern::Pool) -> DisplayTerm<'s, '_> {
+        DisplayTerm {
+            intern_pool,
+            term: self,
+        }
+    }
+}
+
+impl fmt::Display for DisplayTerm<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        DisplayTermContext::new(self.intern_pool).fmt(f, self.term, 0)
+    }
+}
+
 struct DisplayTermContext<'s> {
+    intern_pool: &'s intern::Pool,
     // convert debruijn indices into strings
     names: Vec<Cow<'s, str>>,
 }
 
 impl<'s> DisplayTermContext<'s> {
-    fn new() -> Self {
-        Self { names: vec![] }
+    fn new(intern_pool: &'s intern::Pool) -> Self {
+        Self {
+            intern_pool,
+            names: vec![],
+        }
     }
 
-    fn fresh(&self, id: &'s str) -> Cow<'s, str> {
-        let mut new_id = Cow::Borrowed(id);
+    fn fresh(&self, symbol: Symbol) -> Cow<'s, str> {
+        let orig_id = self.intern_pool.get(symbol);
+        let mut new_id = Cow::Borrowed(orig_id);
         let mut tries = 0;
         'in_use: loop {
             for prev_id in self.names.iter() {
@@ -105,7 +132,7 @@ impl<'s> DisplayTermContext<'s> {
                     // add integer suffix to generate new name
                     // x -> x1 -> x2 -> ...
                     tries += 1;
-                    new_id = Cow::Owned(format!("{id}{tries}"));
+                    new_id = Cow::Owned(format!("{orig_id}{tries}"));
                     continue 'in_use;
                 }
             }
@@ -113,9 +140,9 @@ impl<'s> DisplayTermContext<'s> {
         }
     }
 
-    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, exp: &Term<'s>, prec: u32) -> fmt::Result {
+    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, term: &Term, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
-        match exp {
+        match term {
             Term::Cst(c) => write!(f, "{c}"),
             Term::Var(i) => {
                 if *i >= self.names.len() {
@@ -136,9 +163,9 @@ impl<'s> DisplayTermContext<'s> {
             }
             Term::Lam(lam) => {
                 open(f, prec, 0)?;
-                let id = self.fresh(lam.id);
-                write!(f, "fn {id}")?;
-                self.names.push(id);
+                let param = self.fresh(lam.param);
+                write!(f, "fn {param}")?;
+                self.names.push(param);
                 let result = write!(f, " => ")
                     .and_then(|_| self.fmt(f, &lam.body, 0))
                     .and_then(|_| close(f, prec, 0));
@@ -148,21 +175,15 @@ impl<'s> DisplayTermContext<'s> {
             Term::Pi(dom, rng) => {
                 open(f, prec, 1)?;
                 // TODO: if rng is constant in its argument, don't name the domain at all
-                let id = self.fresh(rng.id);
-                write!(f, "({id} : ")?;
+                let param = self.fresh(rng.param);
+                write!(f, "({param} : ")?;
                 self.fmt(f, dom, 0)?;
                 write!(f, ") -> ")?;
-                self.names.push(id);
+                self.names.push(param);
                 let result = self.fmt(f, &rng.body, 1).and_then(|_| close(f, prec, 1));
                 self.names.pop();
                 result
             }
         }
-    }
-}
-
-impl fmt::Display for Term<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        DisplayTermContext::new().fmt(f, self, 0)
     }
 }

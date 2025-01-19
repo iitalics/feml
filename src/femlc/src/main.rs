@@ -72,10 +72,10 @@ fn main() -> ExitCode {
             if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
                 let mut ctx = elaborate::Context::new();
                 let ty = ctx.elab_type(&ty)?;
-                let exp = ctx.elab_exp_check(exp, ty.clone())?;
-                println!(":: {exp}");
-                let val = evaluate(value::env_empty(), exp);
-                println!("=> {} : {}", val.display(), ctx.pretty(&ty));
+                let tm = ctx.elab_exp_check(exp, ty.clone())?;
+                println!(":: {}", ctx.pretty_term(&tm));
+                let val = evaluate(value::env_empty(), tm);
+                println!("=> {} : {}", val.display(), ctx.pretty_value(&ty));
             }
 
             Ok(())

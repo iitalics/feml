@@ -1,5 +1,6 @@
-use crate::core_syntax::{self, Constant, TermBox};
+use crate::core_syntax::{self, Constant, Term, TermBox};
 use crate::evaluate::{apply_closure, evaluate};
+use crate::intern::{self, Symbol};
 use crate::parse_tree as pst;
 use crate::token::Loc;
 use crate::value::{self, Val, ValBox};
@@ -34,15 +35,17 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Context<'e> {
-    scope: HashMap<&'e str, Binding<'e>>,
+pub struct Context {
+    intern_pool: intern::Pool,
+    scope: HashMap<Symbol, Binding>,
     scope_depth: usize,
 }
 
-pub type Type<'e> = ValBox<'e>;
+pub type Type = ValBox;
 
-struct Binding<'e> {
-    ty: Type<'e>,
+struct Binding {
+    sym: Symbol,
+    ty: Type,
     // level = (scope_depth - debruijn_index). this value is stable as new bindings are
     // introduced and can be used to obtain the correct debruijn index by subtracting from
     // scope_depth again.
@@ -59,19 +62,20 @@ fn look_up_in_global_env(x: &str) -> Option<Constant> {
     }
 }
 
-impl<'e> Context<'e> {
+impl Context {
     pub fn new() -> Self {
         Self {
+            intern_pool: intern::Pool::new(),
             scope: HashMap::with_capacity(32),
             scope_depth: 0,
         }
     }
 
-    fn env(&self) -> value::Env<'e> {
+    fn env(&self) -> value::Env {
         value::env_neutral(self.scope_depth)
     }
 
-    pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'e, '_>) -> Result<(TermBox<'e>, Type<'e>)> {
+    pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'_, '_>) -> Result<(TermBox, Type)> {
         match exp {
             pst::Exp::Var(x) => self.lookup(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
@@ -81,7 +85,7 @@ impl<'e> Context<'e> {
         }
     }
 
-    pub fn elab_exp_check(&mut self, exp: &pst::Exp<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
+    pub fn elab_exp_check(&mut self, exp: &pst::Exp<'_, '_>, ty: Type) -> Result<TermBox> {
         match exp {
             pst::Exp::Lam(lam) => self.elab_lam_check(lam, ty),
             _ => {
@@ -90,8 +94,8 @@ impl<'e> Context<'e> {
                 if !self.compatible(&inf_ty, &ty) {
                     return Err(Error::TypeMismatch(
                         exp.loc(),
-                        self.pretty(&ty),
-                        self.pretty(&inf_ty),
+                        self.pretty_value(&ty),
+                        self.pretty_value(&inf_ty),
                     ));
                 }
                 Ok(stx)
@@ -99,7 +103,7 @@ impl<'e> Context<'e> {
         }
     }
 
-    pub fn elab_type(&mut self, ty_exp: &pst::Exp<'e, '_>) -> Result<Type<'e>> {
+    pub fn elab_type(&mut self, ty_exp: &pst::Exp<'_, '_>) -> Result<Type> {
         let ty_tm = self.elab_exp_check(ty_exp, value::type_type())?;
         let ty = evaluate(self.env(), ty_tm);
         Ok(ty)
@@ -107,13 +111,13 @@ impl<'e> Context<'e> {
 
     fn elab_app_infer(
         &mut self,
-        fun: &pst::Exp<'e, '_>,
-        arg: &pst::Arg<'e, '_>,
-    ) -> Result<(TermBox<'e>, Type<'e>)> {
+        fun: &pst::Exp<'_, '_>,
+        arg: &pst::Arg<'_, '_>,
+    ) -> Result<(TermBox, Type)> {
         let (fun_tm, fun_ty) = self.elab_exp_infer(fun)?;
         let (dom_ty, rng) = match &*fun_ty {
             Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
-            _ => return Err(Error::NotFunction(fun.loc(), self.pretty(&fun_ty))),
+            _ => return Err(Error::NotFunction(fun.loc(), self.pretty_value(&fun_ty))),
         };
         let arg_tm = self.elab_exp_check(arg, dom_ty)?;
         let arg = evaluate(self.env(), arg_tm.clone());
@@ -121,83 +125,86 @@ impl<'e> Context<'e> {
         Ok((core_syntax::app(fun_tm, arg_tm), ret_ty))
     }
 
-    fn elab_lam_infer(&mut self, lam: &pst::Lambda<'e, '_>) -> Result<(TermBox<'e>, Type<'e>)> {
-        let arg_id = lam.name.id;
-        let arg_ty = match lam.param {
+    fn elab_lam_infer(&mut self, lam: &pst::Lambda<'_, '_>) -> Result<(TermBox, Type)> {
+        let param_sym = lam.name.intern(&self.intern_pool);
+        let param_ty = match lam.param {
             Some(param) => self.elab_type(param.ty)?,
             None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
         };
         let (body_tm, ret_ty) = {
-            let prev = self.bind(arg_id, arg_ty.clone());
+            let prev = self.bind(param_sym, param_ty.clone());
             let result = self.elab_exp_infer(lam.body);
-            self.unbind(arg_id, prev);
+            self.unbind(prev);
             result?
         };
         let ret = core_syntax::Abs {
-            id: arg_id,
+            param: param_sym,
             body: reify(self.scope_depth + 1, &ret_ty),
         };
         Ok((
-            core_syntax::lam(arg_id, body_tm),
-            value::pi(arg_ty, ret, self.env()),
+            core_syntax::lam(param_sym, body_tm),
+            value::pi(param_ty, ret, self.env()),
         ))
     }
 
-    fn elab_lam_check(&mut self, lam: &pst::Lambda<'e, '_>, ty: Type<'e>) -> Result<TermBox<'e>> {
-        let arg_id = lam.name.id;
+    fn elab_lam_check(&mut self, lam: &pst::Lambda<'_, '_>, ty: Type) -> Result<TermBox> {
+        let param_sym = lam.name.intern(&self.intern_pool);
         let (dom_ty, rng) = match &*ty {
             Val::Pi(dom_ty, rng) => (dom_ty.clone(), rng),
-            _ => return Err(Error::NotFunction(lam.loc(), self.pretty(&ty))),
+            _ => return Err(Error::NotFunction(lam.loc(), self.pretty_value(&ty))),
         };
         if let Some(param) = lam.param {
-            let arg_ann_ty = self.elab_type(param.ty)?;
-            if !self.compatible(&dom_ty, &arg_ann_ty) {
+            let param_ann_ty = self.elab_type(param.ty)?;
+            if !self.compatible(&dom_ty, &param_ann_ty) {
                 return Err(Error::ParamTypeMismatch(
                     param.ty.loc(),
-                    self.pretty(&arg_ann_ty),
-                    self.pretty(&dom_ty),
+                    self.pretty_value(&param_ann_ty),
+                    self.pretty_value(&dom_ty),
                 ));
             }
         }
         let body_tm = {
-            let prev = self.bind(arg_id, dom_ty);
-            let arg_v = self.env().nth(0);
-            let rng_ty = apply_closure(rng, arg_v);
+            let prev = self.bind(param_sym, dom_ty);
+            let param_v = self.env().nth(0);
+            let rng_ty = apply_closure(rng, param_v);
             let result = self.elab_exp_check(lam.body, rng_ty);
-            self.unbind(arg_id, prev);
+            self.unbind(prev);
             result?
         };
-        Ok(core_syntax::lam(arg_id, body_tm))
+        Ok(core_syntax::lam(param_sym, body_tm))
     }
 
-    fn elab_arr(&mut self, arr: &pst::Arrow<'e, '_>) -> Result<TermBox<'e>> {
+    fn elab_arr(&mut self, arr: &pst::Arrow<'_, '_>) -> Result<TermBox> {
         let dom = self.elab_exp_check(arr.dom, value::type_type())?;
         let dom_ty = evaluate(self.env(), dom.clone());
         match arr.param {
             Some(param) => {
-                let dom_id = param.name.id;
+                let param_sym = param.name.intern(&self.intern_pool);
                 let rng = {
-                    let prev = self.bind(dom_id, dom_ty);
+                    let prev = self.bind(param_sym, dom_ty);
                     let result = self.elab_exp_check(arr.rng, value::type_type());
-                    self.unbind(dom_id, prev);
+                    self.unbind(prev);
                     result?
                 };
-                Ok(core_syntax::pi(dom, dom_id, rng))
+                Ok(core_syntax::pi(dom, param_sym, rng))
             }
             None => {
                 let rng = {
                     self.scope_depth += 1;
+                    //self.bind_without_name(None);
                     let result = self.elab_exp_check(arr.rng, value::type_type());
                     self.scope_depth -= 1;
+                    //self.unbind(None);
                     result?
                 };
-                Ok(core_syntax::pi(dom, "_", rng))
+                Ok(core_syntax::pi(dom, Symbol::UNDERSCORE, rng))
             }
         }
     }
 
-    fn lookup(&self, name: pst::Name<'e>) -> Result<(TermBox<'e>, Type<'e>)> {
-        if let Some(binding) = self.scope.get(&name.id) {
+    fn lookup(&self, name: pst::Name) -> Result<(TermBox, Type)> {
+        let sym = name.intern(&self.intern_pool);
+        if let Some(binding) = self.scope.get(&sym) {
             let idx = self.scope_depth - binding.level;
             return Ok((core_syntax::var(idx), binding.ty.clone()));
         }
@@ -207,36 +214,41 @@ impl<'e> Context<'e> {
         Err(Error::NotDefined(name.loc, name.id.to_string()))
     }
 
-    fn bind(&mut self, id: &'e str, ty: Type<'e>) -> Option<Binding<'e>> {
+    fn bind(&mut self, sym: Symbol, ty: Type) -> Option<Binding> {
         self.scope_depth += 1;
         let binding = Binding {
-            level: self.scope_depth,
+            sym,
             ty,
+            level: self.scope_depth,
         };
-        self.scope.insert(id, binding)
+        self.scope.insert(binding.sym, binding)
     }
 
-    fn unbind(&mut self, id: &'e str, prev: Option<Binding<'e>>) {
+    fn unbind(&mut self, prev: Option<Binding>) {
         self.scope_depth -= 1;
         if let Some(prev_binding) = prev {
-            self.scope.insert(id, prev_binding);
+            self.scope.insert(prev_binding.sym, prev_binding);
         }
     }
 
-    fn compatible(&self, t1: &Type<'_>, t2: &Type<'_>) -> bool {
+    fn compatible(&self, t1: &Type, t2: &Type) -> bool {
         let tm1 = reify(self.scope_depth, t1);
         let tm2 = reify(self.scope_depth, t2);
         tm1.alpha_eq(&tm2)
     }
 
-    pub fn pretty(&self, t: &Type<'_>) -> String {
-        let tm = reify(self.scope_depth, t);
-        // TODO: pass context to fmt to populate names
-        tm.to_string()
+    pub fn pretty_term(&self, tm: &Term) -> String {
+        // TODO: pass context to .display() to populate names
+        tm.display(&self.intern_pool).to_string()
+    }
+
+    pub fn pretty_value(&self, v: &Val) -> String {
+        let tm = reify(self.scope_depth, v);
+        self.pretty_term(&tm)
     }
 }
 
-fn constant_type(c: Constant) -> Type<'static> {
+fn constant_type(c: Constant) -> Type {
     match c {
         Constant::Z => value::type_nat(),
         Constant::S => value::arrow(value::type_nat(), value::type_nat()),
@@ -245,7 +257,7 @@ fn constant_type(c: Constant) -> Type<'static> {
     }
 }
 
-fn reify<'e>(level: usize, v: &Val<'e>) -> TermBox<'e> {
+fn reify(level: usize, v: &Val) -> TermBox {
     // TODO: type-based reification for proper eta-expansion
     match v {
         Val::TypeType => core_syntax::cst(Constant::TypeType),
@@ -266,12 +278,12 @@ fn reify<'e>(level: usize, v: &Val<'e>) -> TermBox<'e> {
             let dom_tm = reify(level, dom);
             let rng_v = apply_closure(rng, value::neu(level + 1));
             let rng_tm = reify(level + 1, &rng_v);
-            core_syntax::pi(dom_tm, rng.id, rng_tm)
+            core_syntax::pi(dom_tm, rng.sym, rng_tm)
         }
         Val::Fun(fun) => {
             let body_v = apply_closure(fun, value::neu(level + 1));
             let body_tm = reify(level + 1, &body_v);
-            core_syntax::lam(fun.id, body_tm)
+            core_syntax::lam(fun.sym, body_tm)
         }
     }
 }
