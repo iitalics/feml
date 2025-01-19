@@ -95,7 +95,7 @@ impl fmt::Display for DisplayTerm<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut ctx = DisplayTermContext::new(self.intern_pool);
         for sym in self.context {
-            ctx.names.push(self.intern_pool.get(*sym).into());
+            ctx.names.push(ctx.fresh(*sym));
         }
         ctx.fmt(f, self.term, 0)
     }
@@ -118,14 +118,14 @@ impl<'s> DisplayTermContext<'s> {
     fn fresh(&self, symbol: Symbol) -> Cow<'s, str> {
         let orig_id = self.intern_pool.get(symbol);
         let mut new_id = Cow::Borrowed(orig_id);
-        let mut tries = 0;
+        let mut tries = 1;
         'in_use: loop {
             for prev_id in self.names.iter() {
                 if prev_id == &new_id {
                     // add integer suffix to generate new name
-                    // x -> x1 -> x2 -> ...
+                    // x -> x.2 -> x.3 -> ...
                     tries += 1;
-                    new_id = Cow::Owned(format!("{orig_id}{tries}"));
+                    new_id = Cow::Owned(format!("{orig_id}.{tries}"));
                     continue 'in_use;
                 }
             }
@@ -138,14 +138,9 @@ impl<'s> DisplayTermContext<'s> {
         match term {
             Term::Con(c) => write!(f, "{}", self.intern_pool.get(*c)),
             Term::Var(i) => {
-                if *i >= self.names.len() {
-                    // FIXME: allow passing initial context of names for pretty printing
-                    // these variables
-                    write!(f, ".{i}")
-                } else {
-                    let id = &self.names[self.names.len() - i - 1];
-                    write!(f, "{id}")
-                }
+                assert!(*i < self.names.len());
+                let id = &self.names[self.names.len() - i - 1];
+                write!(f, "{id}")
             }
             Term::App(fun, arg) => {
                 open(f, prec, 2)?;

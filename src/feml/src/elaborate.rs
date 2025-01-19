@@ -40,6 +40,7 @@ pub struct Context {
     type_type: Type,
     constants: HashMap<Symbol, Type>,
     scope: Vec<Binding>,
+    scope_by_symbol: HashMap<Symbol, usize>,
 }
 
 pub type Type = ValBox;
@@ -47,6 +48,7 @@ pub type Type = ValBox;
 struct Binding {
     sym: Option<Symbol>,
     ty: Type,
+    shadowed_idx: Option<usize>,
 }
 
 impl Context {
@@ -73,6 +75,7 @@ impl Context {
             type_type,
             constants,
             scope: vec![],
+            scope_by_symbol: HashMap::with_capacity(256),
         }
     }
 
@@ -89,22 +92,30 @@ impl Context {
     }
 
     fn scope_find(&self, sym: Symbol) -> Option<(&Binding, Level)> {
-        for (idx, binding) in self.scope.iter().enumerate().rev() {
-            if binding.sym == Some(sym) {
-                return Some((binding, idx + 1));
-            }
-        }
-        None
+        let idx = *self.scope_by_symbol.get(&sym)?;
+        Some((&self.scope[idx], idx + 1))
     }
 
     fn scope_intro(&mut self, sym: Option<Symbol>, ty: Type) -> Level {
-        self.scope.push(Binding { sym, ty });
-        self.scope.len()
+        let idx = self.scope.len();
+        let shadowed_idx = sym.and_then(|sym| self.scope_by_symbol.insert(sym, idx));
+        self.scope.push(Binding {
+            sym,
+            ty,
+            shadowed_idx,
+        });
+        idx + 1
     }
 
     fn scope_exit(&mut self) {
-        let binding = self.scope.pop();
-        assert!(binding.is_some());
+        let binding = self.scope.pop().expect("no prev binding");
+        if let Some(sym) = binding.sym {
+            if let Some(idx) = binding.shadowed_idx {
+                self.scope_by_symbol.insert(sym, idx);
+            } else {
+                self.scope_by_symbol.remove(&sym);
+            }
+        }
     }
 
     pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'_, '_>) -> Result<(TermBox, Type)> {
