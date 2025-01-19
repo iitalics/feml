@@ -13,10 +13,12 @@ pub enum Val {
     // function type
     Pi(ValBox, Clos),
     // neutral variables
-    NeVar(usize),
+    NeVar(Level),
     // neutral application
     NeApp(ValBox, ValBox),
 }
+
+pub type Level = usize;
 
 #[derive(Clone)]
 pub struct Clos {
@@ -37,7 +39,7 @@ impl Clos {
 
 #[derive(Clone)]
 pub enum Env {
-    Ne(usize),
+    Ne(Level),
     Cons(ValBox, Rc<Env>),
 }
 
@@ -90,7 +92,7 @@ pub fn fun(lam: stx::Abs, env: Env) -> ValBox {
     ValBox::new(Val::Fun(Clos::new(lam, env)))
 }
 
-pub fn neutral(lvl: usize) -> ValBox {
+pub fn neutral(lvl: Level) -> ValBox {
     ValBox::new(Val::NeVar(lvl))
 }
 

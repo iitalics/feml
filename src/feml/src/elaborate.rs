@@ -3,13 +3,13 @@ use crate::evaluate::{apply_closure, evaluate};
 use crate::intern::{self, Symbol};
 use crate::parse_tree as pst;
 use crate::token::Loc;
-use crate::value::{self, Val, ValBox};
+use crate::value::{self, Level, Val, ValBox};
 
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("{1} not defined")]
+    #[error("{1} not in scope")]
     NotDefined(Loc, String),
     #[error("expected {1}, got {2}")]
     TypeMismatch(Loc, String, String),
@@ -39,19 +39,14 @@ pub struct Context {
     intern_pool: intern::Pool,
     type_type: Type,
     constants: HashMap<Symbol, Type>,
-    scope: HashMap<Symbol, Binding>,
-    scope_depth: usize,
+    scope: Vec<Binding>,
 }
 
 pub type Type = ValBox;
 
 struct Binding {
-    sym: Symbol,
+    sym: Option<Symbol>,
     ty: Type,
-    // level = (scope_depth - debruijn_index). this value is stable as new bindings are
-    // introduced and can be used to obtain the correct debruijn index by subtracting from
-    // scope_depth again.
-    level: usize,
 }
 
 impl Context {
@@ -77,8 +72,7 @@ impl Context {
             intern_pool,
             type_type,
             constants,
-            scope: HashMap::with_capacity(32),
-            scope_depth: 0,
+            scope: vec![],
         }
     }
 
@@ -86,13 +80,36 @@ impl Context {
         self.type_type.clone()
     }
 
+    fn level(&self) -> Level {
+        self.scope.len()
+    }
+
     fn env(&self) -> value::Env {
-        value::env_neutral(self.scope_depth)
+        value::env_neutral(self.level())
+    }
+
+    fn scope_find(&self, sym: Symbol) -> Option<(&Binding, Level)> {
+        for (idx, binding) in self.scope.iter().enumerate().rev() {
+            if binding.sym == Some(sym) {
+                return Some((binding, idx + 1));
+            }
+        }
+        None
+    }
+
+    fn scope_intro(&mut self, sym: Option<Symbol>, ty: Type) -> Level {
+        self.scope.push(Binding { sym, ty });
+        self.scope.len()
+    }
+
+    fn scope_exit(&mut self) {
+        let binding = self.scope.pop();
+        assert!(binding.is_some());
     }
 
     pub fn elab_exp_infer(&mut self, exp: &pst::Exp<'_, '_>) -> Result<(TermBox, Type)> {
         match exp {
-            pst::Exp::Var(x) => self.lookup(*x),
+            pst::Exp::Var(x) => self.elab_var(*x),
             pst::Exp::App(fun, arg) => self.elab_app_infer(fun, arg),
             pst::Exp::Lam(lam) => self.elab_lam_infer(lam),
             pst::Exp::Arr(arr) => self.elab_arr(arr).map(|t| (t, self.type_type())),
@@ -124,6 +141,18 @@ impl Context {
         Ok(ty)
     }
 
+    fn elab_var(&self, name: pst::Name) -> Result<(TermBox, Type)> {
+        let sym = name.intern(&self.intern_pool);
+        if let Some((binding, lvl)) = self.scope_find(sym) {
+            let idx = self.level() - lvl;
+            return Ok((core_syntax::var(idx), binding.ty.clone()));
+        }
+        if let Some(con_ty) = self.constants.get(&sym) {
+            return Ok((core_syntax::con(sym), con_ty.clone()));
+        }
+        Err(Error::NotDefined(name.loc, name.id.to_string()))
+    }
+
     fn elab_app_infer(
         &mut self,
         fun: &pst::Exp<'_, '_>,
@@ -146,15 +175,16 @@ impl Context {
             Some(param) => self.elab_type(param.ty)?,
             None => return Err(Error::NoLambdaInfer(lam.name.loc, lam.name.to_string())),
         };
-        let (body_tm, ret_ty) = {
-            let prev = self.bind(param_sym, param_ty.clone());
+        let (level, (body_tm, ret_ty)) = {
+            self.scope_intro(Some(param_sym), param_ty.clone());
             let result = self.elab_exp_infer(lam.body);
-            self.unbind(prev);
-            result?
+            let level = self.level();
+            self.scope_exit();
+            (level, result?)
         };
         let ret = core_syntax::Abs {
             param: param_sym,
-            body: reify(self.scope_depth + 1, &ret_ty),
+            body: reify(level, &ret_ty),
         };
         Ok((
             core_syntax::lam(param_sym, body_tm),
@@ -179,11 +209,10 @@ impl Context {
             }
         }
         let body_tm = {
-            let prev = self.bind(param_sym, dom_ty);
-            let param_v = self.env().nth(0);
-            let rng_ty = apply_closure(rng, param_v);
+            self.scope_intro(Some(param_sym), dom_ty);
+            let rng_ty = apply_closure(rng, value::neutral(self.level()));
             let result = self.elab_exp_check(lam.body, rng_ty);
-            self.unbind(prev);
+            self.scope_exit();
             result?
         };
         Ok(core_syntax::lam(param_sym, body_tm))
@@ -192,73 +221,36 @@ impl Context {
     fn elab_arr(&mut self, arr: &pst::Arrow<'_, '_>) -> Result<TermBox> {
         let dom = self.elab_exp_check(arr.dom, self.type_type())?;
         let dom_ty = evaluate(self.env(), dom.clone());
-        match arr.param {
-            Some(param) => {
-                let param_sym = param.name.intern(&self.intern_pool);
-                let rng = {
-                    let prev = self.bind(param_sym, dom_ty);
-                    let result = self.elab_exp_check(arr.rng, self.type_type());
-                    self.unbind(prev);
-                    result?
-                };
-                Ok(core_syntax::pi(dom, param_sym, rng))
-            }
-            None => {
-                let rng = {
-                    self.scope_depth += 1;
-                    //self.bind_without_name(None);
-                    let result = self.elab_exp_check(arr.rng, self.type_type());
-                    self.scope_depth -= 1;
-                    //self.unbind(None);
-                    result?
-                };
-                Ok(core_syntax::pi(dom, Symbol::UNDERSCORE, rng))
-            }
-        }
-    }
-
-    fn lookup(&self, name: pst::Name) -> Result<(TermBox, Type)> {
-        let sym = name.intern(&self.intern_pool);
-        if let Some(binding) = self.scope.get(&sym) {
-            let idx = self.scope_depth - binding.level;
-            return Ok((core_syntax::var(idx), binding.ty.clone()));
-        }
-        if let Some(con_ty) = self.constants.get(&sym) {
-            return Ok((core_syntax::con(sym), con_ty.clone()));
-        }
-        Err(Error::NotDefined(name.loc, name.id.to_string()))
-    }
-
-    fn bind(&mut self, sym: Symbol, ty: Type) -> Option<Binding> {
-        self.scope_depth += 1;
-        let binding = Binding {
-            sym,
-            ty,
-            level: self.scope_depth,
+        let param_sym = arr.param.map(|param| param.name.intern(&self.intern_pool));
+        let rng = {
+            self.scope_intro(param_sym, dom_ty);
+            let result = self.elab_exp_check(arr.rng, self.type_type());
+            self.scope_exit();
+            result?
         };
-        self.scope.insert(binding.sym, binding)
-    }
-
-    fn unbind(&mut self, prev: Option<Binding>) {
-        self.scope_depth -= 1;
-        if let Some(prev_binding) = prev {
-            self.scope.insert(prev_binding.sym, prev_binding);
-        }
+        Ok(core_syntax::pi(
+            dom,
+            param_sym.unwrap_or(Symbol::UNDERSCORE),
+            rng,
+        ))
     }
 
     fn compatible(&self, t1: &Type, t2: &Type) -> bool {
-        let tm1 = reify(self.scope_depth, t1);
-        let tm2 = reify(self.scope_depth, t2);
+        let tm1 = reify(self.level(), t1);
+        let tm2 = reify(self.level(), t2);
         tm1.alpha_eq(&tm2)
     }
 
     pub fn pretty_term(&self, tm: &Term) -> String {
-        // TODO: pass context to .display() to populate names
-        tm.display(&self.intern_pool).to_string()
+        let scope = self.scope.iter();
+        let context = scope
+            .map(|binding| binding.sym.unwrap_or(Symbol::UNDERSCORE))
+            .collect::<Vec<Symbol>>();
+        tm.display(&self.intern_pool, &context).to_string()
     }
 
     pub fn pretty_value(&self, v: &Val) -> String {
-        let tm = reify(self.scope_depth, v);
+        let tm = reify(self.level(), v);
         self.pretty_term(&tm)
     }
 }

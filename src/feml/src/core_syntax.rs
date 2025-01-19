@@ -71,23 +71,33 @@ pub fn pi(dom: TermBox, param: Symbol, rng: TermBox) -> TermBox {
 
 // == Pretty printing ==
 
-pub struct DisplayTerm<'s, 't> {
+pub struct DisplayTerm<'s, 'c, 't> {
     intern_pool: &'s intern::Pool,
+    context: &'c [Symbol],
     term: &'t Term,
 }
 
 impl Term {
-    pub fn display<'s>(&self, intern_pool: &'s intern::Pool) -> DisplayTerm<'s, '_> {
+    pub fn display<'s, 'c>(
+        &self,
+        intern_pool: &'s intern::Pool,
+        context: &'c [Symbol],
+    ) -> DisplayTerm<'s, 'c, '_> {
         DisplayTerm {
             intern_pool,
+            context,
             term: self,
         }
     }
 }
 
-impl fmt::Display for DisplayTerm<'_, '_> {
+impl fmt::Display for DisplayTerm<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        DisplayTermContext::new(self.intern_pool).fmt(f, self.term, 0)
+        let mut ctx = DisplayTermContext::new(self.intern_pool);
+        for sym in self.context {
+            ctx.names.push(self.intern_pool.get(*sym).into());
+        }
+        ctx.fmt(f, self.term, 0)
     }
 }
 
