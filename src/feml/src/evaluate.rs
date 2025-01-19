@@ -26,7 +26,10 @@ pub fn apply(fun: ValBox, arg: ValBox) -> ValBox {
     match &*fun {
         Val::Fun(clos) => apply_closure(clos, arg),
         Val::Con(c, args) => value::con_extend(*c, args, arg),
-        _ => panic!("invalid function application"),
+        _ => {
+            assert!(matches!(&*fun, Val::NeVar(_) | Val::NeApp(_, _)));
+            ValBox::new(Val::NeApp(fun, arg))
+        }
     }
 }
 

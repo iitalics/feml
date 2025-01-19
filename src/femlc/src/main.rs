@@ -54,7 +54,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (n : nat) => S (S n)) Z : nat;
+assert (fn (f : nat -> nat) => f (f Z)) (fn n => S (S n)) : nat;
 ";
 
 fn main() -> ExitCode {

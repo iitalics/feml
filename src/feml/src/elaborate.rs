@@ -274,15 +274,20 @@ fn reify(level: usize, v: &Val) -> TermBox {
             }
             tm
         }
-        Val::Neu(l) => core_syntax::var(level - l),
+        Val::NeVar(l) => core_syntax::var(level - l),
+        Val::NeApp(fun, arg) => {
+            let fun_tm = reify(level, fun);
+            let arg_tm = reify(level, arg);
+            core_syntax::app(fun_tm, arg_tm)
+        }
         Val::Pi(dom, rng) => {
             let dom_tm = reify(level, dom);
-            let rng_v = apply_closure(rng, value::neu(level + 1));
+            let rng_v = apply_closure(rng, value::neutral(level + 1));
             let rng_tm = reify(level + 1, &rng_v);
             core_syntax::pi(dom_tm, rng.sym, rng_tm)
         }
         Val::Fun(fun) => {
-            let body_v = apply_closure(fun, value::neu(level + 1));
+            let body_v = apply_closure(fun, value::neutral(level + 1));
             let body_tm = reify(level + 1, &body_v);
             core_syntax::lam(fun.sym, body_tm)
         }
