@@ -4,6 +4,8 @@ pub mod parse;
 pub mod parse_tree;
 pub mod token;
 
+pub mod intern;
+
 pub mod core_syntax;
 pub mod elaborate;
 
