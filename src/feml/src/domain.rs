@@ -63,19 +63,13 @@ pub enum ValT {
     Pi(Val, Clos),
 }
 
+pub type Arg = Val;
+
 // c V1 … Vn
 pub struct ConVal {
     pub head: Con,
-    pub args: &'static [Val],
+    pub args: &'static [Arg],
 }
-
-#[derive(Copy, Clone)]
-pub struct Clos {
-    pub abs: Abs,
-    pub env: Env,
-}
-
-// type Arg = Val;
 
 // En[…E1[v]]
 pub struct NeuVal {
@@ -86,7 +80,13 @@ pub struct NeuVal {
 #[derive(Copy, Clone)]
 pub enum Elim {
     // u V
-    App(Val),
+    App(Arg),
+}
+
+#[derive(Copy, Clone)]
+pub struct Clos {
+    pub abs: Abs,
+    pub env: Env,
 }
 
 pub enum EnvT {
