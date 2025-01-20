@@ -1,9 +1,7 @@
-use feml::elaborate;
-use feml::evaluate::evaluate;
+use feml::elab::{self, elab_term_chk, elab_type};
 use feml::parse::{self, Parser};
 use feml::parse_tree;
 use feml::token::{self, Loc, Tokenizer};
-use feml::value;
 
 use std::fmt;
 use std::process::ExitCode;
@@ -13,7 +11,7 @@ use std::process::ExitCode;
 enum Error {
     Token(#[from] token::Error),
     Parse(#[from] parse::Error),
-    Elab(#[from] elaborate::Error),
+    Elab(#[from] elab::Error),
 }
 
 impl Error {
@@ -54,7 +52,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (A : type) => fn (x : A) => fn (A : type) => x) : (A : type) -> A -> (B : type) -> A;
+assert (fn (A : type) => fn (x : A) => x) nat : nat -> nat;
 ";
 
 fn main() -> ExitCode {
@@ -70,12 +68,12 @@ fn main() -> ExitCode {
     for decl in decls {
         fn handle_decl(decl: &parse_tree::Decl<'_, '_>) -> Result<(), Error> {
             if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
-                let mut ctx = elaborate::Context::new();
-                let ty = ctx.elab_type(&ty)?;
-                let tm = ctx.elab_exp_check(exp, ty.clone())?;
-                println!(":: {}", ctx.pretty_term(&tm));
-                let val = evaluate(value::env_empty(), tm);
-                println!("=> {} : {}", ctx.pretty_value(&val), ctx.pretty_value(&ty));
+                let mut cx = elab::Context::new();
+                let ty = elab_type(&mut cx, ty)?;
+                let tm = elab_term_chk(&mut cx, exp, ty)?;
+                println!(":: {}", cx.display_term(&tm));
+                let val = cx.eval(tm);
+                println!("=> {} : {}", cx.display(&val), cx.display(&ty));
             }
 
             Ok(())
