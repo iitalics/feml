@@ -84,5 +84,27 @@ fn main() -> ExitCode {
         }
     }
 
+    println!();
+    println!("---------");
+    println!();
+
+    use feml::gc;
+    use feml::gc::tree;
+
+    let ref mut gc = gc::Gc::new();
+    let roots = gc::RootSet::new(&gc);
+    roots.save(tree::leaf(gc, 1));
+    roots.save(tree::leaf(gc, 2));
+    roots.save(tree::node(gc, &roots));
+    roots.save(tree::leaf(gc, 3));
+    roots.save(tree::leaf(gc, 4));
+    roots.save(tree::node(gc, &roots));
+    roots.save(tree::node(gc, &roots));
+    roots.duplicate();
+    roots.save(tree::node(gc, &roots));
+
+    let v = tree::Tree::from_hndl(roots.restore(gc));
+    println!("=> {v}");
+
     ExitCode::SUCCESS
 }

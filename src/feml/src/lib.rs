@@ -5,6 +5,7 @@ pub mod parse_tree;
 pub mod token;
 
 pub mod domain;
+pub mod gc;
 pub mod intern;
 
 pub mod elab;
