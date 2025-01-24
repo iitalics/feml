@@ -96,7 +96,7 @@ impl Interpreter {
 
     /* :: elab_type */
     pub fn elab_chk_def(
-        &self,
+        &mut self,
         gc: &mut Gc,
         def: &parse_tree::Def<'_, '_>,
         stash: &gc::RootSet,
@@ -120,18 +120,24 @@ impl Interpreter {
         // reconstruct full function type from each parameter
         // def f (x : t) ... : u  -->   (x : t) ... -> u
         cx.reify(gc);
+        cx.stash().transfer(stash);
         for param in def.sig.params.iter().rev() {
-            // :: param_tys ... param_ty ret_ty_tm
             let var = Some(param.name.intern(&self.intern_pool));
             cx.unbind();
-            cx.stash().swap();
             cx.reify(gc);
-            cx.stash().swap();
-            cx.stash().save(domain::pi_term(gc, var, cx.stash()));
-            // :: param_tys ... pi_tm
+            cx.stash().transfer(stash);
+            stash.swap();
+            stash.save(domain::pi_term(gc, var, stash));
         }
-        // :: pi_tm
-        cx.stash().transfer(stash);
+
+        // add as a constant
+        let def_sym = def.sig.name.intern(&self.intern_pool);
+        stash.duplicate();
+        let idx = stash.transfer(&self.constants_stash);
+        self.constants_stash.save(domain::empty_env());
+        nbe::eval(gc, &self.constants_stash);
+        self.constants.insert(def_sym, idx);
+
         Ok(())
     }
 }

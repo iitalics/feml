@@ -400,12 +400,13 @@ impl RootSet {
         roots.swap(i, j);
     }
 
-    pub fn transfer(&self, dst: &RootSet) {
+    pub fn transfer(&self, dst: &RootSet) -> usize {
         let mut dst_roots = dst.inner.roots.borrow_mut();
         // if this fails we are trying to do self.transfer(self) which is a no-op
         if let Ok(mut roots) = self.inner.roots.try_borrow_mut() {
             dst_roots.push(roots.pop().unwrap());
         }
+        dst_roots.len() - 1
     }
 
     pub fn forget<'gc>(&self) {

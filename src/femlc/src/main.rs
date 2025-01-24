@@ -55,6 +55,8 @@ fn parse<'a, 'i>(
 
 static INPUT: &str = "
 def id (A : type) (x : A) : A = x;
+assert id : (A : type) -> A -> A;
+assert id nat : nat -> nat;
 ";
 
 fn main() -> ExitCode {
@@ -68,11 +70,11 @@ fn main() -> ExitCode {
     };
 
     let ref mut gc = Gc::new();
-    let interp = Interpreter::new(gc);
+    let mut interp = Interpreter::new(gc);
 
     for decl in decls {
         fn handle_decl(
-            interp: &Interpreter,
+            interp: &mut Interpreter,
             gc: &mut Gc,
             decl: &parse_tree::Decl<'_, '_>,
         ) -> Result<(), Error> {
@@ -108,7 +110,7 @@ fn main() -> ExitCode {
             }
         }
 
-        if let Err(e) = handle_decl(&interp, gc, decl) {
+        if let Err(e) = handle_decl(&mut interp, gc, decl) {
             eprintln!("{}", e.long());
         }
     }
