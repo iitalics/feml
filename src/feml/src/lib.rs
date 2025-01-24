@@ -11,6 +11,7 @@ pub mod domain;
 pub mod format;
 
 pub mod elab;
+pub mod interpreter;
 pub mod nbe;
 
 pub(crate) mod pretty_print_utils {

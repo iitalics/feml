@@ -1,12 +1,11 @@
 use crate::domain::{self, Lvl, Term, Val};
 use crate::format::{display_term, DisplayTerm};
 use crate::gc::{self, Gc, Hndl};
-use crate::intern::{self, Symbol};
+use crate::intern::Symbol;
+use crate::interpreter::Interpreter;
 use crate::nbe;
 use crate::parse_tree as ast;
 use crate::token::Loc;
-
-use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -36,51 +35,23 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Context {
-    pub stash: gc::RootSet,
-    intern_pool: intern::Pool,
-    constants: HashMap<Symbol, usize>,
-    constants_stash: gc::RootSet,
+pub struct Context<'i> {
+    interp: &'i Interpreter,
+    stash: gc::RootSet,
     scope: Vec<Option<Symbol>>,
     scope_stash: gc::RootSet,
 }
 
-impl Context {
-    pub fn new(gc: &mut Gc) -> Self {
-        let intern_pool = intern::Pool::new();
+impl<'i> Context<'i> {
+    pub fn new(interp: &'i Interpreter, gc: &Gc) -> Self {
         let stash = gc::RootSet::new(gc);
-
-        // initialize constants
-        let sym_type = intern_pool.intern("type");
-        let sym_nat = intern_pool.intern("nat");
-        let sym_s = intern_pool.intern("S");
-        let sym_z = intern_pool.intern("Z");
-        let mut constants = HashMap::new();
-        let constants_stash = gc::RootSet::new(gc);
-        let idx_type = constants_stash.save(domain::con_val(gc, sym_type));
+        let type_type = interp.constant(gc, Symbol::TYPE).unwrap();
+        let idx_type = stash.save(type_type);
         assert_eq!(idx_type, 0);
-        // type : type
-        constants.insert(sym_type, idx_type);
-        // nat : type
-        constants.insert(sym_nat, idx_type);
-        // Z : nat
-        let idx_nat = constants_stash.save(domain::con_val(gc, sym_nat));
-        constants.insert(sym_z, idx_nat);
-        // S : nat -> nat
-        let idx_arrow_nat_nat = {
-            stash.save(constants_stash.get(gc, idx_nat));
-            stash.save(constants_stash.get(gc, idx_nat));
-            constants_stash.save(domain::arrow_val(gc, &stash))
-        };
-        constants.insert(sym_s, idx_arrow_nat_nat);
-
-        assert!(stash.is_empty());
 
         Self {
-            intern_pool,
+            interp,
             stash,
-            constants,
-            constants_stash,
             scope: vec![],
             scope_stash: gc::RootSet::new(gc),
         }
@@ -88,13 +59,17 @@ impl Context {
 
     /// Display a term in this context. This properly pretty prints free variables in the
     /// term which refer to bindings currently in scope.
-    pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'_, '_, 'gc> {
-        display_term(&self.intern_pool, &self.scope, term)
+    pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'i, '_, 'gc> {
+        display_term(self.interp.intern_pool(), &self.scope, term)
     }
 
     fn type_type<'gc>(&self, gc: &'gc Gc) {
-        let idx_type = 0;
-        self.stash.save(self.constants_stash.get(gc, idx_type));
+        // 'type' is always instash[0]
+        self.stash.save(self.stash.get(gc, 0));
+    }
+
+    fn intern(&self, name: ast::Name<'_>) -> Symbol {
+        name.intern(self.interp.intern_pool())
     }
 
     fn find(&self, name: Symbol) -> Option<(usize, Lvl)> {
@@ -108,6 +83,10 @@ impl Context {
 
     fn level(&self) -> Lvl {
         self.scope.len() as u32
+    }
+
+    pub fn stash(&self) -> &gc::RootSet {
+        &self.stash
     }
 
     /* :: env */
@@ -130,7 +109,7 @@ impl Context {
 /* :: term ty */
 pub fn elab_term_syn(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<()> {
     match exp {
-        ast::Exp::Var(x) => syn_var(gc, cx, x),
+        ast::Exp::Var(x) => syn_var(gc, cx, *x),
         ast::Exp::App(fun, arg) => syn_app(gc, cx, fun, arg),
         ast::Exp::Arr(arr) => syn_arrow(gc, cx, arr),
         ast::Exp::Lam(lam) => syn_lambda(gc, cx, lam),
@@ -198,19 +177,20 @@ fn is_alpha_eq(lhs: Hndl<'_>, rhs: Hndl<'_>) -> bool {
     }
 }
 
-fn syn_var(gc: &mut Gc, cx: &mut Context, x: &ast::Name<'_>) -> Result<()> {
-    let sym = x.intern(&cx.intern_pool);
-    if let Some((ty, lvl)) = cx.find(sym) {
+fn syn_var(gc: &mut Gc, cx: &mut Context, x: ast::Name<'_>) -> Result<()> {
+    let sym = cx.intern(x);
+    if let Some((ty_stash_idx, lvl)) = cx.find(sym) {
         // Γ ⊢ x ⇒ i : Γ(i)
         let idx = cx.level() - lvl;
         cx.stash.save(domain::var_term(gc, idx));
-        cx.stash.save(cx.scope_stash.get(gc, ty));
+        cx.stash.save(cx.scope_stash.get(gc, ty_stash_idx));
         return Ok(());
     }
-    if let Some(&ty) = cx.constants.get(&sym) {
+    if let Some(ty) = cx.interp.constant(&gc, sym) {
         // ⊢ c ⇒ c : T
+        cx.stash.save(ty);
         cx.stash.save(domain::con_term(gc, sym));
-        cx.stash.save(cx.constants_stash.get(gc, ty));
+        cx.stash.swap();
         return Ok(());
     }
     Err(Error::NotDefined(x.loc, x.to_string()))
@@ -289,7 +269,7 @@ fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
         }
     };
 
-    let param_sym = lambda.name.intern(&cx.intern_pool);
+    let param_sym = cx.intern(lambda.name);
     cx.scope.push(Some(param_sym));
     cx.scope_stash.save(dom_ty);
 
@@ -364,7 +344,7 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
         None => goal_dom_ty,
     };
 
-    let param_sym = lambda.name.intern(&cx.intern_pool);
+    let param_sym = cx.intern(lambda.name);
     cx.scope.push(Some(param_sym));
     cx.scope_stash.save(dom_ty);
 
@@ -397,7 +377,7 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
     let dom_ty = cx.stash.restore(gc);
     // :: dom_ty_tm
 
-    let param_sym = arrow.param.map(|p| p.name.intern(&cx.intern_pool));
+    let param_sym = arrow.param.map(|p| cx.intern(p.name));
     cx.scope.push(param_sym);
     cx.scope_stash.save(dom_ty);
 
@@ -448,9 +428,10 @@ mod test {
     fn test_elab_con() {
         let ref al = ast::allocator();
         let ref mut gc = Gc::new();
-        let ref mut cx = Context::new(gc);
-        let nat = cx.intern_pool.intern("nat");
-        let z = cx.intern_pool.intern("Z");
+        let ref interp = Interpreter::new(gc);
+        let ref mut cx = Context::new(interp, gc);
+        let nat = interp.intern_pool().intern("nat");
+        let z = interp.intern_pool().intern("Z");
 
         let (exp_ast, ty_ast) = parse_assert(al, "assert Z : nat;");
 
@@ -493,10 +474,11 @@ mod test {
     fn test_elab_app() {
         let ref al = ast::allocator();
         let ref mut gc = Gc::new();
-        let ref mut cx = Context::new(gc);
-        let nat = cx.intern_pool.intern("nat");
-        let z = cx.intern_pool.intern("Z");
-        let s = cx.intern_pool.intern("S");
+        let ref interp = Interpreter::new(gc);
+        let ref mut cx = Context::new(interp, gc);
+        let nat = interp.intern_pool().intern("nat");
+        let z = interp.intern_pool().intern("Z");
+        let s = interp.intern_pool().intern("S");
 
         let (exp_ast, ty_ast) = parse_assert(al, "assert S Z : nat;");
         elab_type(gc, cx, ty_ast).unwrap();
@@ -513,8 +495,8 @@ mod test {
         match tm.into() {
             Term::App(t) => match (t.fun().into(), t.arg().into()) {
                 (Term::Con(f), Term::Con(a)) => {
-                    assert_eq!(f.con(), s, "{}", cx.intern_pool.get(f.con()));
-                    assert_eq!(a.con(), z, "{}", cx.intern_pool.get(a.con()));
+                    assert_eq!(f.con(), s);
+                    assert_eq!(a.con(), z);
                 }
                 _ => panic!(),
             },
@@ -537,7 +519,8 @@ mod test {
     fn test_elab_pi() {
         let ref al = ast::allocator();
         let ref mut gc = Gc::new();
-        let ref mut cx = Context::new(gc);
+        let ref interp = Interpreter::new(gc);
+        let ref mut cx = Context::new(interp, gc);
 
         let (exp_ast, _) = parse_assert(al, "assert (A : type) -> A : type;");
         elab_term_syn(gc, cx, exp_ast).unwrap();
@@ -552,7 +535,8 @@ mod test {
     fn test_elab_lam() {
         let ref al = ast::allocator();
         let ref mut gc = Gc::new();
-        let ref mut cx = Context::new(gc);
+        let ref interp = Interpreter::new(gc);
+        let ref mut cx = Context::new(interp, gc);
 
         let (exp_ast, _) = parse_assert(al, "assert (fn (A : type) => fn (x : A) => x) : Z;");
         elab_term_syn(gc, cx, exp_ast).unwrap();
@@ -585,7 +569,8 @@ mod test {
     fn test_elab_dep_app() {
         let ref al = ast::allocator();
         let ref mut gc = Gc::new();
-        let ref mut cx = Context::new(gc);
+        let ref interp = Interpreter::new(gc);
+        let ref mut cx = Context::new(interp, gc);
 
         let (exp_ast, ty_ast) = parse_assert(al, "assert (fn (A : type) => fn (f : A -> A) => fn (x : A) => f (f x)) nat S : nat -> nat;");
         elab_type(gc, cx, ty_ast).unwrap();
