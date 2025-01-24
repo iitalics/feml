@@ -1,12 +1,11 @@
 use crate::domain::{self, Lvl, Term, Val};
+use crate::format::{display_term, DisplayTerm};
 use crate::gc::{self, Gc, Hndl};
 use crate::intern::{self, Symbol};
 use crate::nbe;
 use crate::parse_tree as ast;
 use crate::token::Loc;
 
-use core::fmt;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +84,12 @@ impl Context {
             scope: vec![],
             scope_stash: gc::RootSet::new(gc),
         }
+    }
+
+    /// Display a term in this context. this properly pretty prints free variables in the
+    /// term which refer to bindings currently in scope.
+    pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'_, '_, 'gc> {
+        display_term(&self.intern_pool, &self.scope, term)
     }
 
     fn type_type<'gc>(&self, gc: &'gc Gc) {
@@ -264,7 +269,8 @@ fn syn_app(
     cx.stash.save(rng_ty);
     cx.stash.save(fun_tm);
     cx.stash.save(arg_tm);
-    cx.stash.save(domain::app_term(gc, &cx.stash));
+    let app_tm = domain::app_term(gc, &cx.stash);
+    cx.stash.save(app_tm);
     cx.stash.swap(); // :: app_tm rng_ty
     Ok(())
 }
@@ -288,7 +294,6 @@ fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.scope_stash.save(dom_ty);
 
     elab_term_syn(gc, cx, lambda.body)?;
-    // :: body_tm body_ty
     cx.reify(gc);
     let rng_ty_re = cx.stash.restore(gc);
     // :: body_tm
@@ -299,13 +304,13 @@ fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.stash.save(dom_ty);
     cx.stash.save(rng_ty_re);
     cx.env(gc);
-    cx.stash
-        .save(domain::pi_val(gc, Some(param_sym), &cx.stash));
+    let lambda_ty = domain::pi_val(gc, Some(param_sym), &cx.stash);
+    cx.stash.save(lambda_ty);
     // :: body_tm lambda_ty
 
     cx.stash.swap();
-    cx.stash
-        .save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    let lambda_tm = domain::fn_term(gc, Some(param_sym), &cx.stash);
+    cx.stash.save(lambda_tm);
     cx.stash.swap();
     Ok(())
 }
@@ -376,8 +381,8 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.scope_stash.forget();
     cx.scope.pop();
 
-    cx.stash
-        .save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    let lambda_tm = domain::fn_term(gc, Some(param_sym), &cx.stash);
+    cx.stash.save(lambda_tm);
     Ok(())
 }
 
@@ -390,6 +395,7 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
     cx.stash.duplicate();
     cx.eval(gc);
     let dom_ty = cx.stash.restore(gc);
+    // :: dom_ty_tm
 
     let param_sym = arrow.param.map(|p| p.name.intern(&cx.intern_pool));
     cx.scope.push(param_sym);
@@ -398,126 +404,19 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
     // x:T ⊢ s ⇒ s' : TYPE
     cx.type_type(gc);
     elab_term_chk(gc, cx, arrow.rng)?;
+    // :: dom_ty_tm rng_ty_tm
 
     cx.scope_stash.forget();
     cx.scope.pop();
 
     // ⊢ (x:t) -> s ⇒ Π(x:t').s' : TYPE
-    cx.stash.save(domain::pi_term(gc, param_sym, &cx.stash));
+    let arrow_tm = domain::pi_term(gc, param_sym, &cx.stash);
+    cx.stash.save(arrow_tm);
     cx.type_type(gc);
     Ok(())
 }
 
 // == Pretty printing ==
-
-pub struct DisplayTerm<'c, 'gc> {
-    cx: &'c Context,
-    term: Hndl<'gc>,
-}
-
-impl Context {
-    pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'_, 'gc> {
-        DisplayTerm { cx: self, term }
-    }
-}
-
-impl fmt::Display for DisplayTerm<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut tf = TermFormatter::new(&self.cx.intern_pool);
-        for binding in self.cx.scope.iter() {
-            let name = binding.map_or(BLANK, |n| tf.fresh(n));
-            tf.names.push(name);
-        }
-        tf.fmt(f, self.term, 0)
-    }
-}
-
-struct TermFormatter<'s> {
-    intern_pool: &'s intern::Pool,
-    names: Vec<Cow<'s, str>>,
-}
-
-const BLANK: Cow<str> = Cow::Borrowed("");
-
-impl<'s> TermFormatter<'s> {
-    fn new(intern_pool: &'s intern::Pool) -> Self {
-        Self {
-            intern_pool,
-            names: vec![],
-        }
-    }
-
-    fn fresh(&self, symbol: Symbol) -> Cow<'s, str> {
-        let orig_id = self.intern_pool.get(symbol);
-        let mut new_id = Cow::Borrowed(orig_id);
-        let mut tries = 1;
-        'retry: loop {
-            for prev_id in self.names.iter() {
-                if prev_id == &new_id {
-                    // add integer suffix to generate new name
-                    // x -> x.2 -> x.3 -> ...
-                    tries += 1;
-                    new_id = Cow::Owned(format!("{orig_id}.{tries}"));
-                    continue 'retry;
-                }
-            }
-            return new_id;
-        }
-    }
-
-    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, term: Hndl<'_>, prec: u32) -> fmt::Result {
-        use crate::pretty_print_utils::{close, open};
-        match term.into() {
-            Term::Con(t) => write!(f, "{}", self.intern_pool.get(t.con())),
-            Term::Var(t) => {
-                assert!((t.idx() as usize) < self.names.len());
-                let i = self.names.len() - (t.idx() as usize) - 1;
-                write!(f, "{}", self.names[i])
-            }
-            Term::App(t) => {
-                open(f, prec, 2)?;
-                self.fmt(f, t.fun(), 2)?;
-                write!(f, " ")?;
-                self.fmt(f, t.arg(), 3)?;
-                close(f, prec, 2)
-            }
-            Term::Fn(t) => {
-                let name = t.var().map_or(BLANK, |n| self.fresh(n));
-                open(f, prec, 0)?;
-                write!(f, "fn {name} => ")?;
-                self.names.push(name);
-                let result = self.fmt(f, t.body(), 0);
-                self.names.pop();
-                result?;
-                close(f, prec, 0)
-            }
-            Term::Pi(t) => {
-                open(f, prec, 1)?;
-                match t.var() {
-                    Some(n) => {
-                        let name = self.fresh(n);
-                        write!(f, "({name} : ")?;
-                        self.fmt(f, t.dom(), 0)?;
-                        write!(f, ") -> ")?;
-                        self.names.push(name);
-                        let result = self.fmt(f, t.rng(), 1);
-                        self.names.pop();
-                        result?;
-                    }
-                    None => {
-                        self.fmt(f, t.dom(), 2)?;
-                        write!(f, " -> ")?;
-                        self.names.push(BLANK);
-                        let result = self.fmt(f, t.rng(), 1);
-                        self.names.pop();
-                        result?;
-                    }
-                }
-                close(f, prec, 1)
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod test {

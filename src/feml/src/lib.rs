@@ -8,6 +8,8 @@ pub mod gc;
 pub mod intern;
 
 pub mod domain;
+pub mod format;
+
 pub mod elab;
 pub mod nbe;
 
