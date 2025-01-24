@@ -99,7 +99,7 @@ impl<'i> Context<'i> {
         &self.stash
     }
 
-    fn env(&self, gc: &mut Gc) {
+    pub fn env(&self, gc: &mut Gc) {
         self.stash.save(domain::neu_env(gc, self.level()));
     }
 

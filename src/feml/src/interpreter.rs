@@ -87,9 +87,51 @@ impl Interpreter {
         elab::elab_type(gc, cx, ast.ty)?;
         cx.stash().duplicate();
         elab::elab_term_chk(gc, cx, ast.exp)?;
-        cx.stash().transfer(&stash);
+        // :: ty tm
+        cx.stash().transfer(stash);
         cx.reify(gc);
-        cx.stash().transfer(&stash);
+        cx.stash().transfer(stash);
+        Ok(())
+    }
+
+    /* :: elab_type */
+    pub fn elab_chk_def(
+        &self,
+        gc: &mut Gc,
+        def: &parse_tree::Def<'_, '_>,
+        stash: &gc::RootSet,
+    ) -> elab::Result<()> {
+        let ref mut cx = elab::Context::new(self, gc);
+
+        // introduce parameters into scope
+        for param in def.sig.params {
+            elab::elab_type(gc, cx, param.ty)?;
+            cx.stash().duplicate();
+            cx.bind(Some(param.name));
+        }
+
+        // typecheck the body
+        elab::elab_type(gc, cx, def.sig.ret_ty)?;
+        cx.stash().duplicate();
+        elab::elab_term_chk(gc, cx, def.body)?;
+        cx.stash().transfer(stash);
+        // :: param_tys ... ret_ty_tm
+
+        // reconstruct full function type from each parameter
+        // def f (x : t) ... : u  -->   (x : t) ... -> u
+        cx.reify(gc);
+        for param in def.sig.params.iter().rev() {
+            // :: param_tys ... param_ty ret_ty_tm
+            let var = Some(param.name.intern(&self.intern_pool));
+            cx.unbind();
+            cx.stash().swap();
+            cx.reify(gc);
+            cx.stash().swap();
+            cx.stash().save(domain::pi_term(gc, var, cx.stash()));
+            // :: param_tys ... pi_tm
+        }
+        // :: pi_tm
+        cx.stash().transfer(stash);
         Ok(())
     }
 }

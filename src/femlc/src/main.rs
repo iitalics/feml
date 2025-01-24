@@ -54,10 +54,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (f : nat -> nat) => fn (x : nat) => f (f x)) S : nat -> nat;
-
-def two_plus (n : nat) : nat = S (S n);
-#assert two_plus (two_plus Z) : nat;
+def id (A : type) (x : A) : A = x;
 ";
 
 fn main() -> ExitCode {
@@ -70,13 +67,18 @@ fn main() -> ExitCode {
         }
     };
 
+    let ref mut gc = Gc::new();
+    let interp = Interpreter::new(gc);
+
     for decl in decls {
-        fn handle_decl(decl: &parse_tree::Decl<'_, '_>) -> Result<(), Error> {
+        fn handle_decl(
+            interp: &Interpreter,
+            gc: &mut Gc,
+            decl: &parse_tree::Decl<'_, '_>,
+        ) -> Result<(), Error> {
             match decl {
                 parse_tree::Decl::Assert(assert) => {
-                    let ref mut gc = Gc::new();
                     let stash = gc::RootSet::new(gc);
-                    let interp = Interpreter::new(gc);
                     interp.elab_chk_assert(gc, assert, &stash)?;
                     stash.swap();
                     stash.duplicate();
@@ -85,7 +87,7 @@ fn main() -> ExitCode {
                     let tm = stash.restore(gc);
                     let ty = stash.restore(gc);
                     println!(
-                        "ok {} : {} = {}",
+                        "assert {} : {} = {}",
                         interp.display(tm),
                         interp.display(ty),
                         interp.display(val)
@@ -94,16 +96,19 @@ fn main() -> ExitCode {
                 }
                 parse_tree::Decl::Data(data) => {
                     println!("... skipping 'data {}' ...", data.sig.name);
-                    return Ok(());
+                    Ok(())
                 }
                 parse_tree::Decl::Def(def) => {
-                    println!("... skipping 'def {}' ...", def.sig.name);
-                    return Ok(());
+                    let stash = gc::RootSet::new(gc);
+                    interp.elab_chk_def(gc, def, &stash)?;
+                    let ty = stash.restore(gc);
+                    println!("def {} : {}", def.sig.name, interp.display(ty));
+                    Ok(())
                 }
             }
         }
 
-        if let Err(e) = handle_decl(decl) {
+        if let Err(e) = handle_decl(&interp, gc, decl) {
             eprintln!("{}", e.long());
         }
     }
