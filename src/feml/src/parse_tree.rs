@@ -183,6 +183,10 @@ impl<'s, 'a> Arrow<'s, 'a> {
             rng,
         }
     }
+
+    pub fn name(&self) -> Option<Name<'s>> {
+        self.param.map(|p| p.name)
+    }
 }
 
 /// Lambda expressions.

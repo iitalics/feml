@@ -87,9 +87,9 @@ impl Interpreter {
         elab::elab_type(gc, cx, ast.ty)?;
         cx.stash().duplicate();
         elab::elab_term_chk(gc, cx, ast.exp)?;
-        stash.save(cx.stash().restore(gc));
+        cx.stash().transfer(&stash);
         cx.reify(gc);
-        stash.save(cx.stash().restore(gc));
+        cx.stash().transfer(&stash);
         Ok(())
     }
 }

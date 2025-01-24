@@ -68,13 +68,23 @@ impl<'i> Context<'i> {
         self.stash.save(self.stash.get(gc, 0));
     }
 
-    fn intern(&self, name: ast::Name<'_>) -> Symbol {
-        name.intern(self.interp.intern_pool())
+    /* val :: */
+    pub fn bind(&mut self, name: Option<ast::Name<'_>>) -> Option<Symbol> {
+        let sym = name.map(|name| name.intern(self.interp.intern_pool()));
+        self.scope.push(sym);
+        self.stash.transfer(&self.scope_stash);
+        sym
     }
 
-    fn find(&self, name: Symbol) -> Option<(usize, Lvl)> {
+    pub fn unbind(&mut self) {
+        let name = self.scope.pop();
+        assert!(name.is_some());
+        self.scope_stash.forget();
+    }
+
+    fn find(&self, sym: Symbol) -> Option<(usize, Lvl)> {
         for (i, binding) in self.scope.iter().enumerate() {
-            if *binding == Some(name) {
+            if *binding == Some(sym) {
                 return Some((i, (i + 1) as u32));
             }
         }
@@ -89,8 +99,7 @@ impl<'i> Context<'i> {
         &self.stash
     }
 
-    /* :: env */
-    pub fn env(&self, gc: &mut Gc) {
+    fn env(&self, gc: &mut Gc) {
         self.stash.save(domain::neu_env(gc, self.level()));
     }
 
@@ -177,8 +186,8 @@ fn is_alpha_eq(lhs: Hndl<'_>, rhs: Hndl<'_>) -> bool {
     }
 }
 
-fn syn_var(gc: &mut Gc, cx: &mut Context, x: ast::Name<'_>) -> Result<()> {
-    let sym = cx.intern(x);
+fn syn_var(gc: &mut Gc, cx: &mut Context, name: ast::Name<'_>) -> Result<()> {
+    let sym = name.intern(cx.interp.intern_pool());
     if let Some((ty_stash_idx, lvl)) = cx.find(sym) {
         // Γ ⊢ x ⇒ i : Γ(i)
         let idx = cx.level() - lvl;
@@ -193,7 +202,7 @@ fn syn_var(gc: &mut Gc, cx: &mut Context, x: ast::Name<'_>) -> Result<()> {
         cx.stash.swap();
         return Ok(());
     }
-    Err(Error::NotDefined(x.loc, x.to_string()))
+    Err(Error::NotDefined(name.loc, name.to_string()))
 }
 
 fn syn_app(
@@ -256,10 +265,9 @@ fn syn_app(
 }
 
 fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Result<()> {
-    let dom_ty = match lambda.param {
+    match lambda.param {
         Some(param) => {
             elab_type(gc, cx, param.ty)?;
-            cx.stash.restore(gc)
         }
         None => {
             return Err(Error::ParamRequiresAnnot(
@@ -269,27 +277,26 @@ fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
         }
     };
 
-    let param_sym = cx.intern(lambda.name);
-    cx.scope.push(Some(param_sym));
-    cx.scope_stash.save(dom_ty);
+    cx.stash.duplicate();
+    let param_sym = cx.bind(Some(lambda.name));
 
     elab_term_syn(gc, cx, lambda.body)?;
     cx.reify(gc);
+    // :: dom_ty body_tm rng_ty_re
+
+    cx.unbind();
+
     let rng_ty_re = cx.stash.restore(gc);
-    // :: body_tm
-
-    let dom_ty = cx.scope_stash.restore(gc);
-    cx.scope.pop();
-
-    cx.stash.save(dom_ty);
+    cx.stash.swap();
     cx.stash.save(rng_ty_re);
     cx.env(gc);
-    let lambda_ty = domain::pi_val(gc, Some(param_sym), &cx.stash);
+    // :: body_ty dom rng env
+    let lambda_ty = domain::pi_val(gc, param_sym, &cx.stash);
     cx.stash.save(lambda_ty);
     // :: body_tm lambda_ty
 
     cx.stash.swap();
-    let lambda_tm = domain::fn_term(gc, Some(param_sym), &cx.stash);
+    let lambda_tm = domain::fn_term(gc, param_sym, &cx.stash);
     cx.stash.save(lambda_tm);
     cx.stash.swap();
     Ok(())
@@ -312,7 +319,7 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.stash.save(goal_rng_ty_tm);
     cx.stash.save(goal_rng_env);
 
-    let dom_ty = match lambda.param {
+    match lambda.param {
         Some(param) => {
             // if the lambda has a parameter type annotation then check it against the
             // goal type's domain
@@ -320,8 +327,13 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
             elab_type(gc, cx, param.ty)?;
             let param_ann_ty = cx.stash.restore(gc);
             let goal_dom_ty = cx.stash.restore(gc);
-            cx.stash.save(param_ann_ty); // this is returned at the end of the block
+
+            // leave param_ann_ty on the stack if the check below succeeds. this improves
+            // clarity of error messages even though the types are checked to be
+            // compatible
+            cx.stash.save(param_ann_ty);
             cx.stash.duplicate();
+
             cx.stash.save(goal_dom_ty);
             cx.reify(gc);
             cx.stash.swap();
@@ -335,18 +347,14 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
                     cx.display(goal_dom_ty_re).to_string(),
                 ));
             }
-
-            // use the provided type rather than the bidir inferred type. this improves
-            // clarity of error messages even though the types are checked to be
-            // compatible
-            cx.stash.restore(gc)
         }
-        None => goal_dom_ty,
+        None => {
+            // infer domain type from the goal
+            cx.stash.save(goal_dom_ty);
+        }
     };
 
-    let param_sym = cx.intern(lambda.name);
-    cx.scope.push(Some(param_sym));
-    cx.scope_stash.save(dom_ty);
+    let param_sym = cx.bind(Some(lambda.name));
 
     // get the expected body type by evaluating the goal type's range with a neutral
     // variable as argument
@@ -358,10 +366,9 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     nbe::close(gc, &cx.stash);
     elab_term_chk(gc, cx, lambda.body)?;
 
-    cx.scope_stash.forget();
-    cx.scope.pop();
+    cx.unbind();
 
-    let lambda_tm = domain::fn_term(gc, Some(param_sym), &cx.stash);
+    let lambda_tm = domain::fn_term(gc, param_sym, &cx.stash);
     cx.stash.save(lambda_tm);
     Ok(())
 }
@@ -374,20 +381,16 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
     // [[t']] = T
     cx.stash.duplicate();
     cx.eval(gc);
-    let dom_ty = cx.stash.restore(gc);
-    // :: dom_ty_tm
+    // :: dom_ty_tm dom_ty
 
-    let param_sym = arrow.param.map(|p| cx.intern(p.name));
-    cx.scope.push(param_sym);
-    cx.scope_stash.save(dom_ty);
+    let param_sym = cx.bind(arrow.name());
 
     // x:T ⊢ s ⇒ s' : TYPE
     cx.type_type(gc);
     elab_term_chk(gc, cx, arrow.rng)?;
     // :: dom_ty_tm rng_ty_tm
 
-    cx.scope_stash.forget();
-    cx.scope.pop();
+    cx.unbind();
 
     // ⊢ (x:t) -> s ⇒ Π(x:t').s' : TYPE
     let arrow_tm = domain::pi_term(gc, param_sym, &cx.stash);
