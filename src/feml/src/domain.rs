@@ -255,15 +255,6 @@ impl PiVal {
     }
 }
 
-static TYPE_TYPE: ConVal = ConVal(gc::GcVariantI::new_eternal(
-    TAG_VAL_CON,
-    Symbol::TYPE.to_integer(),
-));
-
-pub fn type_type() -> Hndl<'static> {
-    Hndl::from_static(&TYPE_TYPE)
-}
-
 pub fn con_val(gc: &mut Gc, head: Con) -> Hndl<'_> {
     let val = ConVal(gc::GcVariantI::new(TAG_VAL_CON, head.to_integer()));
     gc.alloc(val)

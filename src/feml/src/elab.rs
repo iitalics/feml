@@ -58,7 +58,8 @@ impl Context {
         let sym_z = intern_pool.intern("Z");
         let mut constants = HashMap::new();
         let constants_stash = gc::RootSet::new(gc);
-        let idx_type = constants_stash.save(domain::type_type());
+        let idx_type = constants_stash.save(domain::con_val(gc, sym_type));
+        assert_eq!(idx_type, 0);
         // type : type
         constants.insert(sym_type, idx_type);
         // nat : type
@@ -67,12 +68,11 @@ impl Context {
         let idx_nat = constants_stash.save(domain::con_val(gc, sym_nat));
         constants.insert(sym_z, idx_nat);
         // S : nat -> nat
-        let arrow_nat_nat = {
+        let idx_arrow_nat_nat = {
             stash.save(constants_stash.get(gc, idx_nat));
             stash.save(constants_stash.get(gc, idx_nat));
-            domain::arrow_val(gc, &stash)
+            constants_stash.save(domain::arrow_val(gc, &stash))
         };
-        let idx_arrow_nat_nat = constants_stash.save(arrow_nat_nat);
         constants.insert(sym_s, idx_arrow_nat_nat);
 
         assert!(stash.is_empty());
@@ -85,6 +85,11 @@ impl Context {
             scope: vec![],
             scope_stash: gc::RootSet::new(gc),
         }
+    }
+
+    fn type_type<'gc>(&self, gc: &'gc Gc) {
+        let idx_type = 0;
+        self.stash.save(self.constants_stash.get(gc, idx_type));
     }
 
     fn find(&self, name: Symbol) -> Option<(usize, Lvl)> {
@@ -165,7 +170,7 @@ pub fn elab_term_chk(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> R
 /* :: ty */
 pub fn elab_type(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<()> {
     // check exp : 'type'
-    cx.stash.save(domain::type_type());
+    cx.type_type(gc);
     elab_term_chk(gc, cx, exp)?;
     // evaluate 'type'-typed-term into type-value
     cx.eval(gc);
@@ -294,11 +299,13 @@ fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.stash.save(dom_ty);
     cx.stash.save(rng_ty_re);
     cx.env(gc);
-    cx.stash.save(domain::pi_val(gc, Some(param_sym), &cx.stash));
+    cx.stash
+        .save(domain::pi_val(gc, Some(param_sym), &cx.stash));
     // :: body_tm lambda_ty
 
     cx.stash.swap();
-    cx.stash.save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    cx.stash
+        .save(domain::fn_term(gc, Some(param_sym), &cx.stash));
     cx.stash.swap();
     Ok(())
 }
@@ -369,13 +376,14 @@ fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Re
     cx.scope_stash.forget();
     cx.scope.pop();
 
-    cx.stash.save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    cx.stash
+        .save(domain::fn_term(gc, Some(param_sym), &cx.stash));
     Ok(())
 }
 
 fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Result<()> {
     // ⊢ t ⇒ t' : TYPE
-    cx.stash.save(domain::type_type());
+    cx.type_type(gc);
     elab_term_chk(gc, cx, arrow.dom)?;
 
     // [[t']] = T
@@ -388,7 +396,7 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
     cx.scope_stash.save(dom_ty);
 
     // x:T ⊢ s ⇒ s' : TYPE
-    cx.stash.save(domain::type_type());
+    cx.type_type(gc);
     elab_term_chk(gc, cx, arrow.rng)?;
 
     cx.scope_stash.forget();
@@ -396,7 +404,7 @@ fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Resul
 
     // ⊢ (x:t) -> s ⇒ Π(x:t').s' : TYPE
     cx.stash.save(domain::pi_term(gc, param_sym, &cx.stash));
-    cx.stash.save(domain::type_type());
+    cx.type_type(gc);
     Ok(())
 }
 
@@ -624,6 +632,21 @@ mod test {
         let tm = cx.stash.restore(gc);
         assert_eq!(cx.display(tm).to_string(), "S (S Z)");
         assert_eq!(cx.display(ty).to_string(), "nat");
+    }
+
+    #[test]
+    fn test_elab_pi() {
+        let ref al = ast::allocator();
+        let ref mut gc = Gc::new();
+        let ref mut cx = Context::new(gc);
+
+        let (exp_ast, _) = parse_assert(al, "assert (A : type) -> A : type;");
+        elab_term_syn(gc, cx, exp_ast).unwrap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        assert_eq!(cx.display(tm).to_string(), "(A : type) -> A");
+        assert_eq!(cx.display(ty).to_string(), "type");
     }
 
     #[test]
