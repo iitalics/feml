@@ -86,7 +86,7 @@ impl Context {
         }
     }
 
-    /// Display a term in this context. this properly pretty prints free variables in the
+    /// Display a term in this context. This properly pretty prints free variables in the
     /// term which refer to bindings currently in scope.
     pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'_, '_, 'gc> {
         display_term(&self.intern_pool, &self.scope, term)
@@ -439,7 +439,7 @@ mod test {
         input: &'i str,
     ) -> (&'a ast::Exp<'a, 'i>, &'a ast::Ty<'a, 'i>) {
         match parse(al, input)[0] {
-            ast::Decl::Assert { exp, ty, .. } => (exp, ty),
+            ast::Decl::Assert(d) => (d.exp, d.ty),
             _ => panic!(),
         }
     }

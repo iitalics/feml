@@ -1,4 +1,4 @@
-use feml::elab2::{self as elab, elab_term_chk, elab_type};
+use feml::elab::{self, elab_term_chk, elab_type};
 use feml::gc::Gc;
 use feml::parse::{self, Parser};
 use feml::parse_tree;
@@ -68,23 +68,29 @@ fn main() -> ExitCode {
 
     for decl in decls {
         fn handle_decl(decl: &parse_tree::Decl<'_, '_>) -> Result<(), Error> {
-            if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
-                let ref mut gc = Gc::new();
-                let ref mut cx = elab::Context::new(gc);
-                elab_type(gc, cx, ty)?;
-                cx.stash.duplicate();
-                elab_term_chk(gc, cx, exp)?; // :: ty tm
-                cx.stash.swap();
-                cx.reify(gc);
-                let ty_re = cx.stash.restore(gc);
-                let tm = cx.stash.restore(gc);
-                println!("> {} : {}", cx.display(tm), cx.display(ty_re));
-                cx.stash.save(tm);
-                cx.eval(gc);
-                cx.reify(gc);
-                let val_re = cx.stash.restore(gc);
-                println!("= {}", cx.display(val_re));
-            }
+            let (exp, ty) = match decl {
+                parse_tree::Decl::Assert(d) => (d.exp, d.ty),
+                _ => {
+                    // skip...
+                    return Ok(());
+                }
+            };
+
+            let ref mut gc = Gc::new();
+            let ref mut cx = elab::Context::new(gc);
+            elab_type(gc, cx, ty)?;
+            cx.stash.duplicate();
+            elab_term_chk(gc, cx, exp)?; // :: ty tm
+            cx.stash.swap();
+            cx.reify(gc);
+            let ty_re = cx.stash.restore(gc);
+            let tm = cx.stash.restore(gc);
+            println!("> {} : {}", cx.display(tm), cx.display(ty_re));
+            cx.stash.save(tm);
+            cx.eval(gc);
+            cx.reify(gc);
+            let val_re = cx.stash.restore(gc);
+            println!("= {}", cx.display(val_re));
 
             Ok(())
         }

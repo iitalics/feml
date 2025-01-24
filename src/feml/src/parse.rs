@@ -2,7 +2,7 @@ use std::mem;
 
 use crate::parse_tree;
 use crate::parse_tree::{Arrow, Exp, Lambda, Match, MatchCase, Pat, Ty};
-use crate::parse_tree::{Decl, Name, Param, Sig};
+use crate::parse_tree::{Assert, Decl, Def, Name, Param, Sig};
 use crate::token::{Keyword, Loc, Token};
 
 #[derive(Debug, thiserror::Error)]
@@ -240,11 +240,12 @@ impl<'i, 'a> Parser<'i, 'a> {
                 },
                 S::AssertSm(loc_assert, exp, ty) => match t {
                     Token::Sm => {
-                        let decl = self.ptal.alloc(Decl::Assert {
+                        let decl = Assert {
                             loc_assert,
                             exp,
                             ty,
-                        });
+                        };
+                        let decl = self.ptal.alloc(Decl::Assert(decl));
                         self.decls.push(decl);
                         self.state = S::Top;
                         break;
@@ -272,7 +273,8 @@ impl<'i, 'a> Parser<'i, 'a> {
                 },
                 S::DefSm(loc_def, sig, body) => match t {
                     Token::Sm => {
-                        let decl = self.ptal.alloc(Decl::Def { loc_def, sig, body });
+                        let def = Def { loc_def, sig, body };
+                        let decl = self.ptal.alloc(Decl::Def(def));
                         self.decls.push(decl);
                         self.state = S::Top;
                         break;

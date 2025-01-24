@@ -46,32 +46,50 @@ impl<'s> Name<'s> {
 }
 
 /// Top-level declarations.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum Decl<'s, 'a> {
-    Def {
-        loc_def: Loc,
-        sig: &'a Sig<'s, 'a>,
-        body: &'a Exp<'s, 'a>,
-        //pub loc_sm: Loc,
-    },
-    Data {
-        loc_data: Loc,
-        sig: &'a Sig<'s, 'a>,
-        //pub loc_lc: Loc,
-        ctors: &'a [&'a Sig<'s, 'a>],
-        //pub loc_rc: Loc,
-        //pub loc_sm: Loc,
-    },
-    Assert {
-        loc_assert: Loc,
-        exp: &'a Exp<'s, 'a>,
-        //pub loc_cl: Loc,
-        ty: &'a Ty<'s, 'a>,
-        //pub loc_sm: Loc,
-    },
+    // def ...;
+    Def(Def<'s, 'a>),
+    // data ...;
+    Data(Data<'s, 'a>),
+    // assert ...;
+    Assert(Assert<'s, 'a>),
 }
 
-/// Signatures for definitions.
+/// Function definitions.
+// def f (x : t) ... : u = e;
+#[derive(Clone)]
+pub struct Def<'s, 'a> {
+    pub loc_def: Loc,
+    pub sig: &'a Sig<'s, 'a>,
+    pub body: &'a Exp<'s, 'a>,
+    //pub loc_sm: Loc,
+}
+
+/// Data declarations.
+// def D (x : t) ... : u { c (y : s) : D x; ... }
+#[derive(Clone)]
+pub struct Data<'s, 'a> {
+    pub loc_data: Loc,
+    pub sig: &'a Sig<'s, 'a>,
+    //pub loc_lc: Loc,
+    pub ctors: &'a [&'a Sig<'s, 'a>],
+    //pub loc_rc: Loc,
+    //pub loc_sm: Loc,
+}
+
+/// Typing assertions.
+// assert e : t;
+#[derive(Clone)]
+pub struct Assert<'s, 'a> {
+    pub loc_assert: Loc,
+    pub exp: &'a Exp<'s, 'a>,
+    //pub loc_cl: Loc,
+    pub ty: &'a Ty<'s, 'a>,
+    //pub loc_sm: Loc,
+}
+
+/// Signatures for function, data, or constructor definitions.
 // name (x : t) ... : u
 #[derive(Clone)]
 pub struct Sig<'s, 'a> {
@@ -228,22 +246,32 @@ type PatArg<'s, 'a> = Pat<'s, 'a>;
 impl fmt::Display for Decl<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Decl::Def { sig, body, .. } => {
-                write!(f, "def {sig} = {body};")
-            }
-
-            Decl::Data { sig, ctors, .. } => {
-                write!(f, "data {sig} {{")?;
-                for ctor in ctors.iter() {
-                    write!(f, " {ctor};")?;
-                }
-                write!(f, " }};")
-            }
-
-            Decl::Assert { exp, ty, .. } => {
-                write!(f, "assert {exp} : {ty};")
-            }
+            Decl::Def(d) => d.fmt(f),
+            Decl::Data(d) => d.fmt(f),
+            Decl::Assert(d) => d.fmt(f),
         }
+    }
+}
+
+impl fmt::Display for Def<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "def {} = {};", self.sig, self.body)
+    }
+}
+
+impl fmt::Display for Data<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "data {} {{", self.sig)?;
+        for ctor in self.ctors.iter() {
+            write!(f, " {ctor};")?;
+        }
+        write!(f, " }};")
+    }
+}
+
+impl fmt::Display for Assert<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "assert {} : {};", self.exp, self.ty)
     }
 }
 
@@ -420,11 +448,11 @@ mod test {
                 ret_ty: exp_x_eq_x,
             });
             // data (==) {...}
-            al.alloc(Decl::Data {
+            Data {
                 loc_data: loc,
                 sig: sig_eq,
                 ctors: std::slice::from_ref(al.alloc(&*sig_refl)),
-            })
+            }
         };
 
         assert_eq!(
@@ -455,11 +483,11 @@ mod test {
             };
             let arr_B_C = al.alloc(Exp::Arr(Arrow::named(par_x_B, var_C)));
             let arr_A_B_C = al.alloc(Exp::Arr(Arrow::unnamed(var_A, arr_B_C)));
-            al.alloc(Decl::Assert {
+            Assert {
                 loc_assert: loc,
                 exp: app_S_Z,
                 ty: arr_A_B_C,
-            })
+            }
         };
 
         assert_eq!(format!("{decl}"), "assert S Z : A -> (x : B) -> C;");
