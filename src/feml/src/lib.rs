@@ -4,16 +4,12 @@ pub mod parse;
 pub mod parse_tree;
 pub mod token;
 
-pub mod domain;
+pub mod gc;
 pub mod intern;
 
+pub mod domain;
 pub mod elab;
 pub mod nbe;
-
-pub mod domain2;
-pub mod elab2;
-pub mod gc;
-pub mod nbe2;
 
 pub(crate) mod pretty_print_utils {
     use std::fmt;

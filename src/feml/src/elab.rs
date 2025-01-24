@@ -1,5 +1,5 @@
-use crate::domain as dmn;
-use crate::domain::{Env, Lvl, Term, TermT, Type, Val, ValT};
+use crate::domain::{self, Lvl, Term, Val};
+use crate::gc::{self, Gc, Hndl};
 use crate::intern::{self, Symbol};
 use crate::nbe;
 use crate::parse_tree as ast;
@@ -38,154 +38,238 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Context {
+    pub stash: gc::RootSet,
     intern_pool: intern::Pool,
-    type_type: Type,
-    constants: HashMap<Symbol, Type>,
-    scope: Vec<Binding>,
-}
-
-struct Binding {
-    name: Option<Symbol>,
-    ty: Type,
-    level: u32,
+    constants: HashMap<Symbol, usize>,
+    constants_stash: gc::RootSet,
+    scope: Vec<Option<Symbol>>,
+    scope_stash: gc::RootSet,
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(gc: &mut Gc) -> Self {
         let intern_pool = intern::Pool::new();
+        let stash = gc::RootSet::new(gc);
 
         // initialize constants
         let sym_type = intern_pool.intern("type");
         let sym_nat = intern_pool.intern("nat");
-        let type_type = dmn::val_con(sym_type);
-        let type_nat = dmn::val_con(sym_nat);
+        let sym_s = intern_pool.intern("S");
+        let sym_z = intern_pool.intern("Z");
         let mut constants = HashMap::new();
-        constants.insert(sym_type, type_type); // type : type
-        constants.insert(sym_nat, type_type); // nat : type
-        constants.insert(
-            // Z : nat
-            intern_pool.intern("Z"),
-            type_nat,
-        );
-        constants.insert(
-            // S : nat
-            intern_pool.intern("S"),
-            dmn::val_arrow(type_nat, type_nat),
-        );
+        let constants_stash = gc::RootSet::new(gc);
+        let idx_type = constants_stash.save(domain::type_type());
+        // type : type
+        constants.insert(sym_type, idx_type);
+        // nat : type
+        constants.insert(sym_nat, idx_type);
+        // Z : nat
+        let idx_nat = constants_stash.save(domain::con_val(gc, sym_nat));
+        constants.insert(sym_z, idx_nat);
+        // S : nat -> nat
+        let arrow_nat_nat = {
+            stash.save(constants_stash.get(gc, idx_nat));
+            stash.save(constants_stash.get(gc, idx_nat));
+            domain::arrow_val(gc, &stash)
+        };
+        let idx_arrow_nat_nat = constants_stash.save(arrow_nat_nat);
+        constants.insert(sym_s, idx_arrow_nat_nat);
+
+        assert!(stash.is_empty());
 
         Self {
             intern_pool,
-            type_type,
+            stash,
             constants,
+            constants_stash,
             scope: vec![],
+            scope_stash: gc::RootSet::new(gc),
         }
     }
 
-    fn bind(&mut self, name: Option<Symbol>, ty: Type) {
-        let level = self.level() + 1;
-        self.scope.push(Binding { name, ty, level })
-    }
-
-    fn unbind(&mut self) {
-        let last = self.scope.pop();
-        assert!(last.is_some());
-    }
-
-    fn find(&self, name: Symbol) -> Option<&Binding> {
-        self.scope.iter().rev().find(|b| b.name == Some(name))
+    fn find(&self, name: Symbol) -> Option<(usize, Lvl)> {
+        for (i, binding) in self.scope.iter().enumerate() {
+            if *binding == Some(name) {
+                return Some((i, (i + 1) as u32));
+            }
+        }
+        None
     }
 
     fn level(&self) -> Lvl {
         self.scope.len() as u32
     }
 
-    fn env(&self) -> Env {
-        dmn::env_neutral(self.level())
+    /* :: env */
+    pub fn env(&self, gc: &mut Gc) {
+        self.stash.save(domain::neu_env(gc, self.level()));
     }
 
-    pub fn eval(&self, tm: Term) -> Val {
-        nbe::eval(self.env(), tm)
+    /* term :: val */
+    pub fn eval(&self, gc: &mut Gc) {
+        self.env(gc);
+        nbe::eval(gc, &self.stash);
     }
 
-    pub fn reify(&self, val: Val) -> Term {
-        nbe::reify(self.level(), val)
+    /* val :: term */
+    pub fn reify(&self, gc: &mut Gc) {
+        nbe::reify(gc, self.level(), &self.stash);
     }
 }
 
-pub fn elab_term_syn(cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<(Term, Type)> {
+/* :: term ty */
+pub fn elab_term_syn(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<()> {
     match exp {
-        ast::Exp::Var(x) => syn_var(cx, x),
-        ast::Exp::App(fun, arg) => syn_app(cx, fun, arg),
-        ast::Exp::Arr(arr) => chk_arrow(cx, arr).map(|tm| (tm, cx.type_type)),
-        ast::Exp::Lam(lam) => syn_lambda(cx, lam),
-        ast::Exp::Mat(_) => unimplemented!("match elab"),
+        ast::Exp::Var(x) => syn_var(gc, cx, x),
+        ast::Exp::App(fun, arg) => syn_app(gc, cx, fun, arg),
+        ast::Exp::Arr(arr) => syn_arrow(gc, cx, arr),
+        ast::Exp::Lam(lam) => syn_lambda(gc, cx, lam),
+        ast::Exp::Mat(_) => unimplemented!("elab match expression"),
     }
 }
 
-pub fn elab_term_chk(cx: &mut Context, exp: &ast::Exp<'_, '_>, goal_ty: Type) -> Result<Term> {
+/* goal_ty :: term */
+pub fn elab_term_chk(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<()> {
     // some expressions can exploit bidir checking type
     #[allow(clippy::single_match)]
     match exp {
-        ast::Exp::Lam(lambda) => {
-            return chk_lambda(cx, lambda, goal_ty);
-        }
+        ast::Exp::Lam(lambda) => return chk_lambda(gc, cx, lambda),
         _ => {}
     }
-    // fall back to inference and then comparing the types
-    let (tm, inf_ty) = elab_term_syn(cx, exp)?;
-    if !is_compatible(cx, inf_ty, goal_ty) {
+
+    elab_term_syn(gc, cx, exp)?;
+    let inf_ty = cx.stash.restore(gc);
+    let tm = cx.stash.restore(gc);
+    let goal_ty = cx.stash.restore(gc);
+    cx.stash.save(tm);
+
+    // check if inferred type is compatible with goal type
+    cx.stash.save(goal_ty);
+    cx.stash.save(inf_ty);
+    cx.reify(gc);
+    cx.stash.swap();
+    cx.reify(gc);
+    let goal_ty_re = cx.stash.restore(gc);
+    let inf_ty_re = cx.stash.restore(gc);
+    if !is_alpha_eq(goal_ty_re, inf_ty_re) {
         return Err(Error::TypeMismatch(
             exp.loc(),
-            cx.display(goal_ty).to_string(),
-            cx.display(inf_ty).to_string(),
+            cx.display(goal_ty_re).to_string(),
+            cx.display(inf_ty_re).to_string(),
         ));
     }
-    Ok(tm)
+
+    Ok(())
 }
 
-pub fn elab_type(cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<Type> {
-    let tm = elab_term_chk(cx, exp, cx.type_type)?;
-    let ty = cx.eval(tm);
-    Ok(ty)
+/* :: ty */
+pub fn elab_type(gc: &mut Gc, cx: &mut Context, exp: &ast::Exp<'_, '_>) -> Result<()> {
+    // check exp : 'type'
+    cx.stash.save(domain::type_type());
+    elab_term_chk(gc, cx, exp)?;
+    // evaluate 'type'-typed-term into type-value
+    cx.eval(gc);
+    Ok(())
 }
 
-fn syn_var(cx: &mut Context, x: &ast::Name<'_>) -> Result<(Term, Type)> {
+fn is_alpha_eq(lhs: Hndl<'_>, rhs: Hndl<'_>) -> bool {
+    // FIMXE: make tail recursive
+    match (lhs.into(), rhs.into()) {
+        (Term::Con(lhs), Term::Con(rhs)) => lhs.con() == rhs.con(),
+        (Term::Var(lhs), Term::Var(rhs)) => lhs.idx() == rhs.idx(),
+        (Term::App(lhs), Term::App(rhs)) => {
+            is_alpha_eq(lhs.arg(), rhs.arg()) && is_alpha_eq(lhs.fun(), rhs.fun())
+        }
+        (Term::Fn(lhs), Term::Fn(rhs)) => is_alpha_eq(lhs.body(), rhs.body()),
+        (Term::Pi(lhs), Term::Pi(rhs)) => {
+            is_alpha_eq(rhs.dom(), lhs.dom()) && is_alpha_eq(lhs.rng(), rhs.rng())
+        }
+        (_, _) => false,
+    }
+}
+
+fn syn_var(gc: &mut Gc, cx: &mut Context, x: &ast::Name<'_>) -> Result<()> {
     let sym = x.intern(&cx.intern_pool);
-    if let Some(binding) = cx.find(sym) {
-        let idx = cx.level() - binding.level;
-        return Ok((dmn::term_var(idx), binding.ty));
+    if let Some((ty, lvl)) = cx.find(sym) {
+        // Γ ⊢ x ⇒ i : Γ(i)
+        let idx = cx.level() - lvl;
+        cx.stash.save(domain::var_term(gc, idx));
+        cx.stash.save(cx.scope_stash.get(gc, ty));
+        return Ok(());
     }
     if let Some(&ty) = cx.constants.get(&sym) {
-        return Ok((dmn::term_con(sym), ty));
+        // ⊢ c ⇒ c : T
+        cx.stash.save(domain::con_term(gc, sym));
+        cx.stash.save(cx.constants_stash.get(gc, ty));
+        return Ok(());
     }
     Err(Error::NotDefined(x.loc, x.to_string()))
 }
 
 fn syn_app(
+    gc: &mut Gc,
     cx: &mut Context,
     fun: &ast::Exp<'_, '_>,
     arg: &ast::Exp<'_, '_>,
-) -> Result<(Term, Type)> {
-    let (fun_tm, fun_ty) = elab_term_syn(cx, fun)?;
-    let (dom_ty, rng) = match fun_ty {
-        ValT::Pi(dom_ty, rng) => (dom_ty, rng),
+) -> Result<()> {
+    // ⊢ f ⇒ f' : Π(x:T).S
+    elab_term_syn(gc, cx, fun)?;
+    let fun_ty = cx.stash.restore(gc);
+    let fun_tm = cx.stash.restore(gc);
+    let (dom_ty, rng_ty_tm, env) = match fun_ty.into() {
+        Val::Pi(t) => (t.dom(), t.rng(), t.env()),
         _ => {
+            cx.stash.save(fun_ty);
+            cx.reify(gc);
+            let fun_ty_r = cx.stash.restore(gc);
             return Err(Error::NotFunction(
                 fun.loc(),
-                cx.display(fun_ty).to_string(),
-            ))
+                cx.display(fun_ty_r).to_string(),
+            ));
         }
     };
-    let arg_tm = elab_term_chk(cx, arg, dom_ty)?;
-    let arg = cx.eval(arg_tm);
-    let rng_ty = nbe::close(rng, arg);
-    Ok((dmn::term_app(fun_tm, arg_tm), rng_ty))
+    cx.stash.save(env);
+    cx.stash.save(rng_ty_tm);
+    cx.stash.save(fun_tm);
+
+    // ⊢ a ⇐ a' : T
+    cx.stash.save(dom_ty);
+    elab_term_chk(gc, cx, arg)?;
+    // [[a']] = A
+    cx.stash.duplicate();
+    cx.eval(gc);
+    let arg = cx.stash.restore(gc);
+    let arg_tm = cx.stash.restore(gc);
+
+    // S' = S[A/x]
+    let fun_tm = cx.stash.restore(gc);
+    let rng_ty_tm = cx.stash.restore(gc);
+    let env = cx.stash.restore(gc);
+    cx.stash.save(fun_tm);
+    cx.stash.save(arg_tm);
+    cx.stash.save(rng_ty_tm);
+    cx.stash.save(env);
+    cx.stash.save(arg);
+    nbe::close(gc, &cx.stash);
+
+    // ⊢ f a ⇒ f' a' : S'
+    let rng_ty = cx.stash.restore(gc);
+    let arg_tm = cx.stash.restore(gc);
+    let fun_tm = cx.stash.restore(gc);
+    cx.stash.save(rng_ty);
+    cx.stash.save(fun_tm);
+    cx.stash.save(arg_tm);
+    cx.stash.save(domain::app_term(gc, &cx.stash));
+    cx.stash.swap(); // :: app_tm rng_ty
+    Ok(())
 }
 
-fn syn_lambda(cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Result<(Term, Type)> {
-    let param_sym = lambda.name.intern(&cx.intern_pool);
+fn syn_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Result<()> {
     let dom_ty = match lambda.param {
-        Some(param) => elab_type(cx, param.ty)?,
+        Some(param) => {
+            elab_type(gc, cx, param.ty)?;
+            cx.stash.restore(gc)
+        }
         None => {
             return Err(Error::ParamRequiresAnnot(
                 lambda.name.loc,
@@ -193,112 +277,147 @@ fn syn_lambda(cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Result<(Term, T
             ))
         }
     };
-    let (body_tm, rng_tm) = {
-        cx.bind(Some(param_sym), dom_ty);
-        let result = elab_term_syn(cx, lambda.body);
-        let result = result.map(|(tm, ty)| (tm, cx.reify(ty)));
-        cx.unbind();
-        result?
-    };
-    let body = dmn::Abs {
-        name: Some(param_sym),
-        body: body_tm,
-    };
-    let rng = dmn::Abs {
-        name: Some(param_sym),
-        body: rng_tm,
-    };
-    Ok((dmn::term_fn(body), dmn::val_pi(dom_ty, rng, cx.env())))
+
+    let param_sym = lambda.name.intern(&cx.intern_pool);
+    cx.scope.push(Some(param_sym));
+    cx.scope_stash.save(dom_ty);
+
+    elab_term_syn(gc, cx, lambda.body)?;
+    // :: body_tm body_ty
+    cx.reify(gc);
+    let rng_ty_re = cx.stash.restore(gc);
+    // :: body_tm
+
+    let dom_ty = cx.scope_stash.restore(gc);
+    cx.scope.pop();
+
+    cx.stash.save(dom_ty);
+    cx.stash.save(rng_ty_re);
+    cx.env(gc);
+    cx.stash.save(domain::pi_val(gc, Some(param_sym), &cx.stash));
+    // :: body_tm lambda_ty
+
+    cx.stash.swap();
+    cx.stash.save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    cx.stash.swap();
+    Ok(())
 }
 
-fn chk_lambda(cx: &mut Context, lambda: &ast::Lambda<'_, '_>, goal_ty: Type) -> Result<Term> {
-    let (goal_dom_ty, goal_rng) = match goal_ty {
-        ValT::Pi(dom_ty, rng) => (dom_ty, rng),
+fn chk_lambda(gc: &mut Gc, cx: &mut Context, lambda: &ast::Lambda<'_, '_>) -> Result<()> {
+    let goal_ty = cx.stash.restore(gc);
+    let (goal_dom_ty, goal_rng_ty_tm, goal_rng_env) = match goal_ty.into() {
+        Val::Pi(t) => (t.dom(), t.rng(), t.env()),
         _ => {
+            cx.stash.save(goal_ty);
+            cx.reify(gc);
+            let goal_ty_re = cx.stash.restore(gc);
             return Err(Error::NotFunction(
                 lambda.loc(),
-                cx.display(goal_ty).to_string(),
-            ))
+                cx.display(goal_ty_re).to_string(),
+            ));
         }
     };
-    let param_sym = lambda.name.intern(&cx.intern_pool);
+    cx.stash.save(goal_rng_ty_tm);
+    cx.stash.save(goal_rng_env);
+
     let dom_ty = match lambda.param {
         Some(param) => {
-            let param_ann_ty = elab_type(cx, param.ty)?;
-            if !is_compatible(cx, param_ann_ty, goal_dom_ty) {
+            // if the lambda has a parameter type annotation then check it against the
+            // goal type's domain
+            cx.stash.save(goal_dom_ty);
+            elab_type(gc, cx, param.ty)?;
+            let param_ann_ty = cx.stash.restore(gc);
+            let goal_dom_ty = cx.stash.restore(gc);
+            cx.stash.save(param_ann_ty); // this is returned at the end of the block
+            cx.stash.duplicate();
+            cx.stash.save(goal_dom_ty);
+            cx.reify(gc);
+            cx.stash.swap();
+            cx.reify(gc);
+            let param_ann_ty_re = cx.stash.restore(gc);
+            let goal_dom_ty_re = cx.stash.restore(gc);
+            if !is_alpha_eq(param_ann_ty_re, goal_dom_ty_re) {
                 return Err(Error::ParamTypeMismatch(
                     param.loc(),
-                    cx.display(param_ann_ty).to_string(),
-                    cx.display(goal_dom_ty).to_string(),
+                    cx.display(param_ann_ty_re).to_string(),
+                    cx.display(goal_dom_ty_re).to_string(),
                 ));
             }
+
             // use the provided type rather than the bidir inferred type. this improves
             // clarity of error messages even though the types are checked to be
             // compatible
-            param_ann_ty
+            cx.stash.restore(gc)
         }
         None => goal_dom_ty,
     };
-    let body_tm = {
-        cx.bind(Some(param_sym), dom_ty);
-        let arg = dmn::val_neu(cx.level());
-        let body_ty = nbe::close(goal_rng, arg);
-        let result = elab_term_chk(cx, lambda.body, body_ty);
-        cx.unbind();
-        result?
-    };
-    let body = dmn::Abs {
-        name: Some(param_sym),
-        body: body_tm,
-    };
-    Ok(dmn::term_fn(body))
+
+    let param_sym = lambda.name.intern(&cx.intern_pool);
+    cx.scope.push(Some(param_sym));
+    cx.scope_stash.save(dom_ty);
+
+    // get the expected body type by evaluating the goal type's range with a neutral
+    // variable as argument
+    let goal_rng_env = cx.stash.restore(gc);
+    let goal_rng_ty_tm = cx.stash.restore(gc);
+    cx.stash.save(goal_rng_ty_tm);
+    cx.stash.save(goal_rng_env);
+    cx.stash.save(domain::neu_val(gc, cx.level()));
+    nbe::close(gc, &cx.stash);
+    elab_term_chk(gc, cx, lambda.body)?;
+
+    cx.scope_stash.forget();
+    cx.scope.pop();
+
+    cx.stash.save(domain::fn_term(gc, Some(param_sym), &cx.stash));
+    Ok(())
 }
 
-fn chk_arrow(cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Result<Term> {
-    let dom_tm = elab_term_chk(cx, arrow.dom, cx.type_type)?;
-    let dom_ty = cx.eval(dom_tm);
+fn syn_arrow(gc: &mut Gc, cx: &mut Context, arrow: &ast::Arrow<'_, '_>) -> Result<()> {
+    // ⊢ t ⇒ t' : TYPE
+    cx.stash.save(domain::type_type());
+    elab_term_chk(gc, cx, arrow.dom)?;
+
+    // [[t']] = T
+    cx.stash.duplicate();
+    cx.eval(gc);
+    let dom_ty = cx.stash.restore(gc);
+
     let param_sym = arrow.param.map(|p| p.name.intern(&cx.intern_pool));
-    let rng_tm = {
-        cx.bind(param_sym, dom_ty);
-        let result = elab_term_chk(cx, arrow.rng, cx.type_type);
-        cx.unbind();
-        result?
-    };
-    let rng = dmn::Abs {
-        name: param_sym,
-        body: rng_tm,
-    };
-    Ok(dmn::term_pi(dom_tm, rng))
-}
+    cx.scope.push(param_sym);
+    cx.scope_stash.save(dom_ty);
 
-fn is_compatible(cx: &Context, ty1: Type, ty2: Type) -> bool {
-    let tm1 = cx.reify(ty1);
-    let tm2 = cx.reify(ty2);
-    tm1.alpha_eq(tm2)
+    // x:T ⊢ s ⇒ s' : TYPE
+    cx.stash.save(domain::type_type());
+    elab_term_chk(gc, cx, arrow.rng)?;
+
+    cx.scope_stash.forget();
+    cx.scope.pop();
+
+    // ⊢ (x:t) -> s ⇒ Π(x:t').s' : TYPE
+    cx.stash.save(domain::pi_term(gc, param_sym, &cx.stash));
+    cx.stash.save(domain::type_type());
+    Ok(())
 }
 
 // == Pretty printing ==
 
-pub struct DisplayTerm<'c> {
+pub struct DisplayTerm<'c, 'gc> {
     cx: &'c Context,
-    term: Term,
+    term: Hndl<'gc>,
 }
 
 impl Context {
-    pub fn display(&self, val: Val) -> DisplayTerm<'_> {
-        self.display_term(self.reify(val))
-    }
-
-    pub fn display_term(&self, term: Term) -> DisplayTerm<'_> {
+    pub fn display<'gc>(&self, term: Hndl<'gc>) -> DisplayTerm<'_, 'gc> {
         DisplayTerm { cx: self, term }
     }
 }
 
-impl fmt::Display for DisplayTerm<'_> {
+impl fmt::Display for DisplayTerm<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut tf = TermFormatter::new(&self.cx.intern_pool);
         for binding in self.cx.scope.iter() {
-            let name = binding.name.map_or(BLANK, |n| tf.fresh(n));
+            let name = binding.map_or(BLANK, |n| tf.fresh(n));
             tf.names.push(name);
         }
         tf.fmt(f, self.term, 0)
@@ -338,50 +457,50 @@ impl<'s> TermFormatter<'s> {
         }
     }
 
-    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, term: Term, prec: u32) -> fmt::Result {
+    fn fmt(&mut self, f: &mut fmt::Formatter<'_>, term: Hndl<'_>, prec: u32) -> fmt::Result {
         use crate::pretty_print_utils::{close, open};
-        match term {
-            TermT::Con(con) => write!(f, "{}", self.intern_pool.get(*con)),
-            TermT::Var(idx) => {
-                assert!((*idx as usize) < self.names.len());
-                let i = self.names.len() - (*idx as usize) - 1;
+        match term.into() {
+            Term::Con(t) => write!(f, "{}", self.intern_pool.get(t.con())),
+            Term::Var(t) => {
+                assert!((t.idx() as usize) < self.names.len());
+                let i = self.names.len() - (t.idx() as usize) - 1;
                 write!(f, "{}", self.names[i])
             }
-            TermT::App(fun, arg) => {
+            Term::App(t) => {
                 open(f, prec, 2)?;
-                self.fmt(f, fun, 2)?;
+                self.fmt(f, t.fun(), 2)?;
                 write!(f, " ")?;
-                self.fmt(f, arg, 3)?;
+                self.fmt(f, t.arg(), 3)?;
                 close(f, prec, 2)
             }
-            TermT::Fn(abs) => {
-                let name = abs.name.map_or(BLANK, |n| self.fresh(n));
+            Term::Fn(t) => {
+                let name = t.var().map_or(BLANK, |n| self.fresh(n));
                 open(f, prec, 0)?;
                 write!(f, "fn {name} => ")?;
                 self.names.push(name);
-                let result = self.fmt(f, abs.body, 0);
+                let result = self.fmt(f, t.body(), 0);
                 self.names.pop();
                 result?;
                 close(f, prec, 0)
             }
-            TermT::Pi(dom, rng) => {
+            Term::Pi(t) => {
                 open(f, prec, 1)?;
-                match rng.name {
+                match t.var() {
                     Some(n) => {
                         let name = self.fresh(n);
                         write!(f, "({name} : ")?;
-                        self.fmt(f, dom, 0)?;
+                        self.fmt(f, t.dom(), 0)?;
                         write!(f, ") -> ")?;
                         self.names.push(name);
-                        let result = self.fmt(f, rng.body, 1);
+                        let result = self.fmt(f, t.rng(), 1);
                         self.names.pop();
                         result?;
                     }
                     None => {
-                        self.fmt(f, dom, 2)?;
+                        self.fmt(f, t.dom(), 2)?;
                         write!(f, " -> ")?;
                         self.names.push(BLANK);
-                        let result = self.fmt(f, rng.body, 1);
+                        let result = self.fmt(f, t.rng(), 1);
                         self.names.pop();
                         result?;
                     }
@@ -389,5 +508,186 @@ impl<'s> TermFormatter<'s> {
                 close(f, prec, 1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::parse::Parser;
+    use crate::token::Tokenizer;
+
+    fn parse<'a, 'i>(al: &'a ast::Allocator, input: &'i str) -> Vec<&'a ast::Decl<'a, 'i>> {
+        let mut prs = Parser::new(al);
+        let mut tkz = Tokenizer::new(input);
+        for r in &mut tkz {
+            let (loc, t) = r.unwrap();
+            prs.feed(loc, t).unwrap();
+        }
+        prs.end_of_file(tkz.loc()).unwrap()
+    }
+
+    fn parse_assert<'a, 'i>(
+        al: &'a ast::Allocator,
+        input: &'i str,
+    ) -> (&'a ast::Exp<'a, 'i>, &'a ast::Ty<'a, 'i>) {
+        match parse(al, input)[0] {
+            ast::Decl::Assert { exp, ty, .. } => (exp, ty),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_elab_con() {
+        let ref al = ast::allocator();
+        let ref mut gc = Gc::new();
+        let ref mut cx = Context::new(gc);
+        let nat = cx.intern_pool.intern("nat");
+        let z = cx.intern_pool.intern("Z");
+
+        let (exp_ast, ty_ast) = parse_assert(al, "assert Z : nat;");
+
+        elab_type(gc, cx, ty_ast).unwrap();
+        let ty = cx.stash.restore(gc);
+        match ty.into() {
+            Val::Con(v) => assert_eq!(v.con(), nat),
+            _ => panic!(),
+        }
+
+        elab_term_syn(gc, cx, exp_ast).unwrap();
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        match tm.into() {
+            Term::Con(t) => assert_eq!(t.con(), z),
+            _ => panic!(),
+        }
+        match ty.into() {
+            Val::Con(v) => assert_eq!(v.con(), nat),
+            _ => panic!(),
+        }
+        cx.stash.save(ty);
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        match ty.into() {
+            Term::Con(v) => assert_eq!(v.con(), nat),
+            _ => panic!(),
+        }
+
+        elab_type(gc, cx, ty_ast).unwrap();
+        elab_term_chk(gc, cx, exp_ast).unwrap();
+        let tm = cx.stash.restore(gc);
+        match tm.into() {
+            Term::Con(t) => assert_eq!(t.con(), z),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_elab_app() {
+        let ref al = ast::allocator();
+        let ref mut gc = Gc::new();
+        let ref mut cx = Context::new(gc);
+        let nat = cx.intern_pool.intern("nat");
+        let z = cx.intern_pool.intern("Z");
+        let s = cx.intern_pool.intern("S");
+
+        let (exp_ast, ty_ast) = parse_assert(al, "assert S Z : nat;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        elab_term_chk(gc, cx, exp_ast).unwrap();
+        cx.stash.swap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        match ty.into() {
+            Term::Con(t) => assert_eq!(t.con(), nat),
+            _ => panic!(),
+        }
+        match tm.into() {
+            Term::App(t) => match (t.fun().into(), t.arg().into()) {
+                (Term::Con(f), Term::Con(a)) => {
+                    assert_eq!(f.con(), s, "{}", cx.intern_pool.get(f.con()));
+                    assert_eq!(a.con(), z, "{}", cx.intern_pool.get(a.con()));
+                }
+                _ => panic!(),
+            },
+            _ => panic!(),
+        }
+
+        let (exp_ast, ty_ast) = parse_assert(al, "assert S (S Z) : nat;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        elab_term_chk(gc, cx, exp_ast).unwrap();
+        cx.stash.swap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        assert_eq!(cx.display(tm).to_string(), "S (S Z)");
+        assert_eq!(cx.display(ty).to_string(), "nat");
+    }
+
+    #[test]
+    fn test_elab_lam() {
+        let ref al = ast::allocator();
+        let ref mut gc = Gc::new();
+        let ref mut cx = Context::new(gc);
+
+        let (exp_ast, _) = parse_assert(al, "assert (fn (A : type) => fn (x : A) => x) : Z;");
+        elab_term_syn(gc, cx, exp_ast).unwrap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        assert_eq!(cx.display(tm).to_string(), "fn A => fn x => x");
+        assert_eq!(cx.display(ty).to_string(), "(A : type) -> (x : A) -> A");
+
+        let (exp_ast, ty_ast) =
+            parse_assert(al, "assert (fn A => fn x => x) : (A : type) -> A -> A;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        elab_term_chk(gc, cx, exp_ast).unwrap();
+        cx.stash.swap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        assert_eq!(cx.display(tm).to_string(), "fn A => fn x => x");
+        assert_eq!(cx.display(ty).to_string(), "(A : type) -> A -> A");
+
+        let (exp_ast, ty_ast) =
+            parse_assert(al, "assert (fn A => fn x => x) : (A : type) -> A -> nat;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        assert!(elab_term_chk(gc, cx, exp_ast).is_err());
+    }
+
+    #[test]
+    fn test_elab_dep_app() {
+        let ref al = ast::allocator();
+        let ref mut gc = Gc::new();
+        let ref mut cx = Context::new(gc);
+
+        let (exp_ast, ty_ast) = parse_assert(al, "assert (fn (A : type) => fn (f : A -> A) => fn (x : A) => f (f x)) nat S : nat -> nat;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        elab_term_chk(gc, cx, exp_ast).unwrap();
+        cx.stash.swap();
+        cx.reify(gc);
+        let ty = cx.stash.restore(gc);
+        let tm = cx.stash.restore(gc);
+        assert_eq!(
+            cx.display(tm).to_string(),
+            "(fn A => fn f => fn x => f (f x)) nat S"
+        );
+        assert_eq!(cx.display(ty).to_string(), "nat -> nat");
+
+        cx.stash.save(tm);
+        cx.eval(gc);
+        cx.reify(gc);
+        let val = cx.stash.restore(gc);
+        assert_eq!(cx.display(val).to_string(), "fn x => S (S x)");
+
+        let (exp_ast, ty_ast) = parse_assert(al, "assert (fn (A : type) => fn (f : A -> A) => fn (x : A) => f (f Z)) nat S : nat -> nat;");
+        elab_type(gc, cx, ty_ast).unwrap();
+        cx.stash.duplicate();
+        assert!(elab_term_chk(gc, cx, exp_ast).is_err());
     }
 }

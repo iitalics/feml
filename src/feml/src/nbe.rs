@@ -1,90 +1,159 @@
-use crate::domain as dmn;
-use crate::domain::{Env, EnvT, Idx, Lvl, Term, TermT, Val, ValT};
+use crate::domain::{self, Env, Idx, Lvl, Term, Val};
+use crate::gc::{self, Gc};
 
-// == NbE ==
-
-pub fn eval(env: Env, tm: Term) -> Val {
+/* term env :: val */
+pub fn eval(gc: &mut Gc, stash: &gc::RootSet) {
     // FIXME: make tail (mutual-)recursive, with apply and close
-    match tm {
-        TermT::Con(con) => dmn::val_con(*con),
-        TermT::Var(idx) => index(env, *idx),
-        TermT::App(fun, arg) => apply(eval(env, fun), eval(env, arg)),
-        TermT::Fn(abs) => dmn::val_fn(*abs, env),
-        TermT::Pi(dom, rng_abs) => dmn::val_pi(eval(env, dom), *rng_abs, env),
+    let env = stash.restore(gc);
+    let tm = stash.restore(gc);
+    match tm.into() {
+        Term::Con(t) => {
+            stash.save(domain::con_val(gc, t.con()));
+        }
+        Term::Var(t) => {
+            stash.save(env);
+            index(gc, stash, t.idx());
+        }
+        Term::App(t) => {
+            stash.save(t.fun());
+            stash.save(env);
+            stash.save(t.arg());
+            stash.save(env);
+            eval(gc, stash);
+            // :: fun env arg
+            let arg = stash.restore(gc);
+            let env = stash.restore(gc);
+            let fun = stash.restore(gc);
+            stash.save(arg);
+            stash.save(fun);
+            stash.save(env);
+            eval(gc, stash);
+            // :: arg fun
+            apply(gc, stash);
+        }
+        Term::Fn(t) => {
+            stash.save(t.body());
+            stash.save(env);
+            stash.save(domain::fn_val(gc, t.var(), stash));
+        }
+        Term::Pi(t) => {
+            let var = t.var();
+            stash.save(t.rng());
+            stash.save(env);
+            stash.save(t.dom());
+            stash.save(env);
+            eval(gc, stash);
+            let dom = stash.restore(gc);
+            let env = stash.restore(gc);
+            let rng = stash.restore(gc);
+            stash.save(dom);
+            stash.save(rng);
+            stash.save(env);
+            stash.save(domain::pi_val(gc, var, stash));
+        }
     }
 }
 
-pub fn index(mut env: Env, mut idx: Idx) -> Val {
+/* env :: val */
+pub fn index<'gc>(gc: &'gc mut Gc, stash: &gc::RootSet, mut idx: Idx) {
+    let mut env = stash.restore(gc);
     loop {
-        match *env {
-            EnvT::Ext(next, v) => {
+        match env.into() {
+            Env::Neu(e) => {
+                assert!(idx < e.lvl());
+                let lvl = e.lvl() - idx;
+                stash.save(domain::neu_val(gc, lvl));
+                return;
+            }
+            Env::Ext(e) => {
                 if idx == 0 {
-                    return v;
+                    stash.save(e.top());
+                    return;
                 }
-                env = next;
+                env = e.pop();
                 idx -= 1;
             }
-            EnvT::Neu(lvl) => {
-                assert!(idx < lvl);
-                return dmn::val_neu(lvl - idx);
-            }
         }
     }
 }
 
-pub fn apply(fun: Val, arg: Val) -> Val {
-    match fun {
-        ValT::Fn(clos) => close(clos, arg),
-        ValT::Con(con) => dmn::con_app(con, arg),
-        ValT::Neu(neu) => dmn::neu_app(neu, arg),
-        _ => todo!(),
+/* arg fun :: val */
+pub fn apply<'gc>(gc: &'gc mut Gc, stash: &gc::RootSet) {
+    let fun = stash.restore(gc);
+    let arg = stash.restore(gc);
+    match fun.into() {
+        Val::Fn(f) => {
+            stash.save(f.body());
+            stash.save(f.env());
+            stash.save(arg);
+            close(gc, stash)
+        }
+        Val::Con(_) | Val::Neu(_) | Val::App(_) => {
+            stash.save(fun);
+            stash.save(arg);
+            stash.save(domain::app_val(gc, &stash));
+        }
+        Val::Pi(_) => panic!("invalid Pi application"),
     }
 }
 
-pub fn close(clos: &dmn::Clos, arg: Val) -> Val {
-    eval(dmn::env_ext(clos.env, arg), clos.abs.body)
+/* body env arg :: val */
+pub fn close<'gc>(gc: &'gc mut Gc, stash: &gc::RootSet) {
+    // TODO: if body is Var(0) return arg, if body is Var(n+1) then index from env
+    stash.save(domain::ext_env(gc, stash)); // :: body env
+    eval(gc, stash)
 }
 
-pub fn reify(ctx: Lvl, val: Val) -> Term {
-    match val {
-        ValT::Con(con) => {
-            let mut tm = dmn::term_con(con.head);
-            for &arg in con.args {
-                tm = dmn::term_app(tm, reify(ctx, arg));
-            }
-            tm
+/* val :: term */
+pub fn reify<'gc>(gc: &'gc mut Gc, ctx: Lvl, stash: &gc::RootSet) {
+    let val = stash.restore(gc);
+    match val.into() {
+        Val::Con(v) => {
+            stash.save(domain::con_term(gc, v.con()));
+            //for arg in v.args() {...}
         }
-        ValT::Neu(neu) => {
-            let lvl = neu.head;
+        Val::Neu(v) => {
+            let lvl = v.lvl();
             assert!(lvl <= ctx);
-            let mut tm = dmn::term_var(ctx - lvl);
-            for elim in neu.elims {
-                match elim {
-                    dmn::Elim::App(arg) => {
-                        tm = dmn::term_app(tm, reify(ctx, arg));
-                    }
-                }
-            }
-            tm
+            let idx = ctx - lvl;
+            stash.save(domain::var_term(gc, idx));
+            //for elim in v.elims() {...}
         }
-        ValT::Fn(body) => {
-            let body_val = close(body, dmn::val_neu(ctx + 1));
-            let body_tm = reify(ctx + 1, body_val);
-            let body = dmn::Abs {
-                name: body.abs.name,
-                body: body_tm,
-            };
-            dmn::term_fn(body)
+        Val::App(v) => {
+            stash.save(v.arg());
+            stash.save(v.head());
+            reify(gc, ctx, stash);
+            stash.swap();
+            reify(gc, ctx, stash);
+            stash.save(domain::app_term(gc, stash));
         }
-        ValT::Pi(dom_ty, rng) => {
-            let dom_tm = reify(ctx, dom_ty);
-            let rng_ty = close(rng, dmn::val_neu(ctx + 1));
-            let rng_tm = reify(ctx + 1, rng_ty);
-            let rng = dmn::Abs {
-                name: rng.abs.name,
-                body: rng_tm,
+        Val::Fn(v) => {
+            let var = v.var();
+            stash.save(v.body());
+            stash.save(v.env());
+            stash.save(domain::neu_val(gc, ctx + 1));
+            close(gc, stash);
+            reify(gc, ctx + 1, stash);
+            stash.save(domain::fn_term(gc, var, stash));
+        }
+        Val::Pi(v) => {
+            let var = v.var();
+            stash.save(v.env());
+            stash.save(v.rng());
+            let dom = {
+                stash.save(v.dom());
+                reify(gc, ctx, stash);
+                stash.restore(gc)
             };
-            dmn::term_pi(dom_tm, rng)
+            let rng = stash.restore(gc);
+            let env = stash.restore(gc);
+            stash.save(dom);
+            stash.save(rng);
+            stash.save(env);
+            stash.save(domain::neu_val(gc, ctx + 1)); // :: dom rng env arg
+            close(gc, stash); // :: dom rng
+            reify(gc, ctx + 1, stash); // :: dom rng
+            stash.save(domain::pi_term(gc, var, stash));
         }
     }
 }
