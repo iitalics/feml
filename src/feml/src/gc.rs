@@ -30,7 +30,7 @@ impl Gc {
     pub fn alloc<T: GcType>(&mut self, object: T) -> Hndl<'_> {
         unsafe {
             let hdr = *object.as_raw_hndl();
-            let hndl = self.bump.as_ptr() as RawHndl;
+            let hndl = self.bump.as_ptr() as *mut GcHeader;
             let end = self.bump.add(hdr.size());
             if end > self.heap.end {
                 todo!("GC collect");
@@ -80,7 +80,7 @@ impl Drop for Heap {
 /// start of an object.
 ///
 /// Raw handles may fall out of sync with the GC if they are not saved in a root set.
-pub type RawHndl = *mut GcHeader;
+pub type RawHndl = *const GcHeader;
 
 /// Header field allocated at the front of all managed objects.
 #[repr(C, align(8))]
@@ -161,43 +161,72 @@ impl<'gc> Hndl<'gc> {
         }
     }
 
+    pub fn null() -> Self {
+        Self {
+            raw: ptr::null_mut(),
+            _gc: PhantomData,
+        }
+    }
+
     pub fn as_raw(&self) -> RawHndl {
         self.raw
     }
 
-    pub fn hdr(&self) -> GcHeader {
-        unsafe { *self.raw }
+    pub fn is_null(&self) -> bool {
+        self.raw.is_null()
     }
 
-    pub unsafe fn get<T: GcType>(&self) -> &'gc T {
-        let ptr = ptr::NonNull::new(self.raw).unwrap();
-        ptr.cast().as_ref()
+    pub fn tag(&self) -> u32 {
+        unsafe { self.get::<GcHeader>().map_or(0, |h| h.tag()) }
+    }
+
+    pub unsafe fn get<T: GcType>(&self) -> Option<&'gc T> {
+        (self.raw as *const T).as_ref()
+    }
+
+    pub unsafe fn as_ref<T: GcType>(&self) -> &'gc T {
+        &*(self.raw as *const T)
+    }
+}
+
+impl Hndl<'static> {
+    pub fn from_static<T: GcType>(object: &'static T) -> Self {
+        let raw = object.as_raw_hndl();
+        unsafe {
+            assert!((*raw).is_eternal());
+            Self::from_raw(raw)
+        }
     }
 }
 
 // managed object shape variants. uses the following mnemonics:
 // - I: integer (i64)
 // - H: managed handle (Hndl)
+// - L: handle list ([Hndl])
+
+#[repr(C)]
+pub struct GcVariantHH(GcHeader, Cell<RawHndl>, Cell<RawHndl>);
 
 #[repr(C)]
 pub struct GcVariantI(GcHeader, i64);
 
 #[repr(C)]
-pub struct GcVariantHH(GcHeader, Cell<RawHndl>, Cell<RawHndl>);
+pub struct GcVariantIH(GcHeader, i64, Cell<RawHndl>);
+
+#[repr(C)]
+pub struct GcVariantIHH(GcHeader, i64, Cell<RawHndl>, Cell<RawHndl>);
+
+#[repr(C)]
+pub struct GcVariantIHHH(GcHeader, i64, Cell<RawHndl>, Cell<RawHndl>, Cell<RawHndl>);
+
+// #[repr(C)]
+// pub struct GcVariantIL(GcHeader, i64);
 
 unsafe impl GcType for GcVariantI {}
+unsafe impl GcType for GcVariantIH {}
 unsafe impl GcType for GcVariantHH {}
-
-impl GcVariantI {
-    pub const fn new(tag: u32, field0: i64) -> Self {
-        let hdr = GcHeader::from_tag_size_fields(tag, 16, 0);
-        Self(hdr, field0)
-    }
-
-    pub fn field0(&self) -> i64 {
-        self.1
-    }
-}
+unsafe impl GcType for GcVariantIHH {}
+unsafe impl GcType for GcVariantIHHH {}
 
 impl GcVariantHH {
     pub fn new(tag: u32, field0: Hndl<'_>, field1: Hndl<'_>) -> Self {
@@ -211,6 +240,96 @@ impl GcVariantHH {
 
     pub fn field1(&self) -> Hndl<'_> {
         unsafe { Hndl::from_raw(self.2.get()) }
+    }
+}
+
+impl GcVariantI {
+    pub fn new(tag: u32, field0: i64) -> Self {
+        let hdr = GcHeader::from_tag_size_fields(tag, 16, 0);
+        Self(hdr, field0)
+    }
+
+    pub const fn new_eternal(tag: u32, field0: i64) -> Self {
+        let hdr = GcHeader::from_tag_size_fields(tag, 16, 0).eternal();
+        Self(hdr, field0)
+    }
+
+    pub fn field0(&self) -> i64 {
+        self.1
+    }
+}
+
+impl GcVariantIH {
+    pub fn new(tag: u32, field0: i64, field1: Hndl<'_>) -> Self {
+        let hdr = GcHeader::from_tag_size_fields(tag, 24, 1);
+        Self(hdr, field0, Cell::new(field1.as_raw()))
+    }
+
+    pub fn field0(&self) -> i64 {
+        self.1
+    }
+
+    pub fn field1(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.2.get()) }
+    }
+}
+
+impl GcVariantIHH {
+    pub fn new(tag: u32, field0: i64, field1: Hndl<'_>, field2: Hndl<'_>) -> Self {
+        let hdr = GcHeader::from_tag_size_fields(tag, 32, 2);
+        Self(
+            hdr,
+            field0,
+            Cell::new(field1.as_raw()),
+            Cell::new(field2.as_raw()),
+        )
+    }
+
+    pub fn field0(&self) -> i64 {
+        self.1
+    }
+
+    pub fn field1(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.2.get()) }
+    }
+
+    pub fn field2(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.3.get()) }
+    }
+}
+
+impl GcVariantIHHH {
+    pub fn new(
+        tag: u32,
+        field0: i64,
+        field1: Hndl<'_>,
+        field2: Hndl<'_>,
+        field3: Hndl<'_>,
+    ) -> Self {
+        let hdr = GcHeader::from_tag_size_fields(tag, 40, 3);
+        Self(
+            hdr,
+            field0,
+            Cell::new(field1.as_raw()),
+            Cell::new(field2.as_raw()),
+            Cell::new(field3.as_raw()),
+        )
+    }
+
+    pub fn field0(&self) -> i64 {
+        self.1
+    }
+
+    pub fn field1(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.2.get()) }
+    }
+
+    pub fn field2(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.3.get()) }
+    }
+
+    pub fn field3(&self) -> Hndl<'_> {
+        unsafe { Hndl::from_raw(self.4.get()) }
     }
 }
 
@@ -229,6 +348,14 @@ impl RootSet {
         });
         gc.roots.borrow_mut().push(Rc::downgrade(&inner));
         Self { inner }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.roots.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.roots.borrow().is_empty()
     }
 
     // FIXME: for this to be sound, the user needs to be provide "proof" that handles
@@ -266,6 +393,13 @@ impl RootSet {
         roots.push(top);
     }
 
+    pub fn swap(&self) {
+        let mut roots = self.inner.roots.borrow_mut();
+        let i = roots.len() - 1;
+        let j = roots.len() - 2;
+        roots.swap(i, j);
+    }
+
     pub fn forget<'gc>(&self) {
         // this is "let _ = self.restore(gc)" but without requiring a `Gc`
         let mut roots = self.inner.roots.borrow_mut();
@@ -275,6 +409,20 @@ impl RootSet {
     pub fn forget_all(&self) {
         let mut roots = self.inner.roots.borrow_mut();
         roots.clear();
+    }
+}
+
+impl std::fmt::Debug for RootSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RootSet[")?;
+        let mut sep = "";
+        for &raw in self.inner.roots.borrow().iter() {
+            let hndl = unsafe { Hndl::from_raw(raw) };
+            let tag = hndl.tag();
+            write!(f, "{sep}{tag:x}")?;
+            sep = ", ";
+        }
+        write!(f, "]")
     }
 }
 
@@ -300,11 +448,11 @@ pub mod tree {
     unsafe impl GcType for Leaf {}
     unsafe impl GcType for Node {}
 
-    impl<'gc> Tree<'gc> {
-        pub fn from_hndl(h: Hndl<'gc>) -> Self {
-            match h.hdr().tag() {
-                TAG_LEAF => Self::Leaf(unsafe { h.get::<Leaf>() }),
-                TAG_NODE => Self::Node(unsafe { h.get::<Node>() }),
+    impl<'gc> From<Hndl<'gc>> for Tree<'gc> {
+        fn from(h: Hndl<'gc>) -> Self {
+            match h.tag() {
+                TAG_LEAF => Self::Leaf(unsafe { h.as_ref::<Leaf>() }),
+                TAG_NODE => Self::Node(unsafe { h.as_ref::<Node>() }),
                 _ => panic!("type error: not a tree"),
             }
         }
@@ -327,11 +475,11 @@ pub mod tree {
 
     impl Node {
         pub fn left(&self) -> Tree<'_> {
-            Tree::from_hndl(self.0.field0())
+            self.0.field0().into()
         }
 
         pub fn right(&self) -> Tree<'_> {
-            Tree::from_hndl(self.0.field1())
+            self.0.field1().into()
         }
     }
 

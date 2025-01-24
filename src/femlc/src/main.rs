@@ -1,4 +1,5 @@
-use feml::elab::{self, elab_term_chk, elab_type};
+use feml::elab2::{self as elab, elab_term_chk, elab_type};
+use feml::gc::Gc;
 use feml::parse::{self, Parser};
 use feml::parse_tree;
 use feml::token::{self, Loc, Tokenizer};
@@ -52,7 +53,7 @@ fn parse<'a, 'i>(
 }
 
 static INPUT: &str = "
-assert (fn (A : type) => fn (x : A) => x) nat : nat -> nat;
+assert (fn (f : nat -> nat) => fn (x : nat) => f (f x)) S : nat -> nat;
 ";
 
 fn main() -> ExitCode {
@@ -68,12 +69,21 @@ fn main() -> ExitCode {
     for decl in decls {
         fn handle_decl(decl: &parse_tree::Decl<'_, '_>) -> Result<(), Error> {
             if let parse_tree::Decl::Assert { exp, ty, .. } = decl {
-                let mut cx = elab::Context::new();
-                let ty = elab_type(&mut cx, ty)?;
-                let tm = elab_term_chk(&mut cx, exp, ty)?;
-                println!(":: {}", cx.display_term(&tm));
-                let val = cx.eval(tm);
-                println!("=> {} : {}", cx.display(&val), cx.display(&ty));
+                let ref mut gc = Gc::new();
+                let ref mut cx = elab::Context::new(gc);
+                elab_type(gc, cx, ty)?;
+                cx.stash.duplicate();
+                elab_term_chk(gc, cx, exp)?; // :: ty tm
+                cx.stash.swap();
+                cx.reify(gc);
+                let ty_re = cx.stash.restore(gc);
+                let tm = cx.stash.restore(gc);
+                println!("> {} : {}", cx.display(tm), cx.display(ty_re));
+                cx.stash.save(tm);
+                cx.eval(gc);
+                cx.reify(gc);
+                let val_re = cx.stash.restore(gc);
+                println!("= {}", cx.display(val_re));
             }
 
             Ok(())
@@ -83,28 +93,6 @@ fn main() -> ExitCode {
             eprintln!("{}", e.long());
         }
     }
-
-    println!();
-    println!("---------");
-    println!();
-
-    use feml::gc;
-    use feml::gc::tree;
-
-    let ref mut gc = gc::Gc::new();
-    let roots = gc::RootSet::new(&gc);
-    roots.save(tree::leaf(gc, 1));
-    roots.save(tree::leaf(gc, 2));
-    roots.save(tree::node(gc, &roots));
-    roots.save(tree::leaf(gc, 3));
-    roots.save(tree::leaf(gc, 4));
-    roots.save(tree::node(gc, &roots));
-    roots.save(tree::node(gc, &roots));
-    roots.duplicate();
-    roots.save(tree::node(gc, &roots));
-
-    let v = tree::Tree::from_hndl(roots.restore(gc));
-    println!("=> {v}");
 
     ExitCode::SUCCESS
 }

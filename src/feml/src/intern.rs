@@ -12,8 +12,23 @@ use std::ptr::NonNull;
 pub struct Symbol(NonZeroU32);
 
 impl Symbol {
-    /// The symbol for "_", which is always present.
+    /// The symbol "_".
     pub const UNDERSCORE: Symbol = Symbol(NonZeroU32::new(1).unwrap());
+
+    /// The symbol "type".
+    pub const TYPE: Symbol = Symbol(NonZeroU32::new(2).unwrap());
+
+    pub fn from_integer(i: i64) -> Option<Self> {
+        if i < 0 || i >= (u32::MAX as i64) {
+            None
+        } else {
+            NonZeroU32::new(i as u32).map(Symbol)
+        }
+    }
+
+    pub const fn to_integer(self) -> i64 {
+        self.0.get() as i64
+    }
 }
 
 /// Maintains a list of interned strings, which can be referred to using cheap handles
@@ -30,10 +45,12 @@ impl Pool {
         let mut symbols = Vec::with_capacity(128);
         let mut lookup = HashMap::with_capacity(1024);
 
-        // register known string(s)
-        let s = RawStr::from_static("_");
-        symbols.push(s);
-        lookup.insert(s, Symbol::UNDERSCORE);
+        for (i, known_string) in [(1, "_"), (2, "type")] {
+            let s = RawStr::from_static(known_string);
+            symbols.push(s);
+            lookup.insert(s, Symbol(NonZeroU32::new(i).unwrap()));
+            assert_eq!(symbols.len(), i as usize);
+        }
 
         Self {
             al: Bump::new(),
@@ -139,6 +156,8 @@ mod test {
         let pool = Pool::new();
         assert_eq!(pool.get(Symbol::UNDERSCORE), "_");
         assert_eq!(pool.intern("_"), Symbol::UNDERSCORE);
+        assert_eq!(pool.get(Symbol::TYPE), "type");
+        assert_eq!(pool.intern("type"), Symbol::TYPE);
     }
 
     #[test]
