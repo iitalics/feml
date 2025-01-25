@@ -148,7 +148,7 @@ impl Interpreter {
         let def_tm_idx = cx.stash().transfer(&self.defs_stash);
 
         // reconstruct full function type from each parameter
-        // def f (x : t) ... : u  -->   (x : t) ... -> u
+        // def f (x : t) ... : u  -->  (x : t) ... -> u
         for &var in param_vars.iter().rev() {
             // :: param_tys ... param_ty ret_ty
             cx.reify(gc);
