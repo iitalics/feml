@@ -7,12 +7,11 @@ pub type Idx = u32;
 
 // == Terms ==
 
-const TAG_TERM_BASE: u32 = 0x0100;
-const TAG_TERM_CON: u32 = TAG_TERM_BASE | 0x01;
-const TAG_TERM_VAR: u32 = TAG_TERM_BASE | 0x02;
-const TAG_TERM_APP: u32 = TAG_TERM_BASE | 0x03;
-const TAG_TERM_FN: u32 = TAG_TERM_BASE | 0x04;
-const TAG_TERM_PI: u32 = TAG_TERM_BASE | 0x05;
+const TAG_TERM_CON: u32 = 0x101;
+const TAG_TERM_VAR: u32 = 0x102;
+const TAG_TERM_APP: u32 = 0x103;
+const TAG_TERM_FN: u32 = 0x104;
+const TAG_TERM_PI: u32 = 0x105;
 
 #[derive(Copy, Clone)]
 pub enum Term<'gc> {
@@ -142,12 +141,11 @@ impl PiTerm {
 
 // == Values ==
 
-const TAG_VAL_BASE: u32 = 0x0200;
-const TAG_VAL_CON: u32 = TAG_VAL_BASE | 0x01;
-const TAG_VAL_NEU: u32 = TAG_VAL_BASE | 0x02;
-const TAG_VAL_APP: u32 = TAG_VAL_BASE | 0x03;
-const TAG_VAL_FN: u32 = TAG_VAL_BASE | 0x04;
-const TAG_VAL_PI: u32 = TAG_VAL_BASE | 0x05;
+const TAG_VAL_CON: u32 = 0x201;
+const TAG_VAL_NEU: u32 = 0x202;
+const TAG_VAL_APP: u32 = 0x203;
+const TAG_VAL_FN: u32 = 0x204;
+const TAG_VAL_PI: u32 = 0x205;
 
 #[derive(Copy, Clone)]
 pub enum Val<'gc> {
@@ -308,9 +306,8 @@ pub fn arrow_val<'gc>(gc: &'gc mut Gc, stash: &gc::RootSet) -> Hndl<'gc> {
 
 // == Environments ==
 
-const TAG_ENV_BASE: u32 = 0x0300;
-const TAG_ENV_NEU: u32 = TAG_ENV_BASE | 0x01;
-const TAG_ENV_EXT: u32 = TAG_ENV_BASE | 0x02;
+const TAG_ENV_NEU: u32 = 0x301;
+const TAG_ENV_EXT: u32 = 0x302;
 
 #[derive(Copy, Clone)]
 pub enum Env<'gc> {
