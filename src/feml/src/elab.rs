@@ -2,7 +2,7 @@ use crate::domain::{self, Lvl, Term, Val};
 use crate::format::{display_term, DisplayTerm};
 use crate::gc::{self, Gc, Hndl};
 use crate::intern::Symbol;
-use crate::interpreter::Interpreter;
+use crate::interpreter::{Definition, Interpreter};
 use crate::nbe;
 use crate::parse_tree as ast;
 use crate::token::Loc;
@@ -43,11 +43,9 @@ pub struct Context<'i> {
 }
 
 impl<'i> Context<'i> {
-    pub fn new(interp: &'i Interpreter, gc: &Gc) -> Self {
+    pub fn new(interp: &'i Interpreter, gc: &mut Gc) -> Self {
         let stash = gc::RootSet::new(gc);
-        let type_type = interp.constant(gc, Symbol::TYPE).unwrap();
-        let idx_type = stash.save(type_type);
-        assert_eq!(idx_type, 0);
+        stash.save(domain::con_val(gc, Symbol::TYPE));
 
         Self {
             interp,
@@ -64,7 +62,7 @@ impl<'i> Context<'i> {
     }
 
     fn type_type<'gc>(&self, gc: &'gc Gc) {
-        // 'type' is always instash[0]
+        // 'type' is always at stash[0]
         self.stash.save(self.stash.get(gc, 0));
     }
 
@@ -193,16 +191,25 @@ fn syn_var(gc: &mut Gc, cx: &mut Context, name: ast::Name<'_>) -> Result<()> {
         let idx = cx.level() - lvl;
         cx.stash.save(domain::var_term(gc, idx));
         cx.stash.save(cx.scope_stash.get(gc, ty_stash_idx));
-        return Ok(());
-    }
-    if let Some(ty) = cx.interp.constant(&gc, sym) {
+        Ok(())
+    } else if let Some(def) = cx.interp.definition(&gc, sym) {
         // ⊢ c ⇒ c : T
-        cx.stash.save(ty);
-        cx.stash.save(domain::con_term(gc, sym));
-        cx.stash.swap();
-        return Ok(());
+        match def {
+            Definition::Constant { ty } => {
+                cx.stash.save(ty);
+                cx.stash.save(domain::con_term(gc, sym));
+                cx.stash.swap();
+                Ok(())
+            }
+            Definition::Expression { tm, ty } => {
+                cx.stash.save(tm);
+                cx.stash.save(ty);
+                Ok(())
+            }
+        }
+    } else {
+        Err(Error::NotDefined(name.loc, name.to_string()))
     }
-    Err(Error::NotDefined(name.loc, name.to_string()))
 }
 
 fn syn_app(

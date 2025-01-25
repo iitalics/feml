@@ -10,8 +10,18 @@ use std::collections::HashMap;
 
 pub struct Interpreter {
     intern_pool: intern::Pool,
-    constants: HashMap<Symbol, usize>,
-    constants_stash: gc::RootSet,
+    defs: HashMap<Symbol, Def>,
+    defs_stash: gc::RootSet,
+}
+
+enum Def {
+    Constant { ty: usize },
+    Expression { tm: usize, ty: usize },
+}
+
+pub enum Definition<'gc> {
+    Constant { ty: Hndl<'gc> },
+    Expression { tm: Hndl<'gc>, ty: Hndl<'gc> },
 }
 
 impl Interpreter {
@@ -24,32 +34,37 @@ impl Interpreter {
 
         /* initialize constants */
 
-        let mut constants = HashMap::new();
-        let constants_stash = gc::RootSet::new(gc);
-        let idx_type = constants_stash.save(domain::con_val(gc, sym_type));
+        let mut defs = HashMap::new();
+        let defs_stash = gc::RootSet::new(gc);
+        let idx_type = defs_stash.save(domain::con_val(gc, sym_type));
 
         // type : type
-        constants.insert(sym_type, idx_type);
+        defs.insert(sym_type, Def::Constant { ty: idx_type });
 
         // nat : type
-        constants.insert(sym_nat, idx_type);
+        defs.insert(sym_nat, Def::Constant { ty: idx_type });
 
         // Z : nat
-        let idx_nat = constants_stash.save(domain::con_val(gc, sym_nat));
-        constants.insert(sym_z, idx_nat);
+        let idx_nat = defs_stash.save(domain::con_val(gc, sym_nat));
+        defs.insert(sym_z, Def::Constant { ty: idx_nat });
 
         // S : nat -> nat
         let idx_arrow_nat_nat = {
-            constants_stash.save(constants_stash.get(gc, idx_nat));
-            constants_stash.save(constants_stash.get(gc, idx_nat));
-            constants_stash.save(domain::arrow_val(gc, &constants_stash))
+            defs_stash.save(defs_stash.get(gc, idx_nat));
+            defs_stash.save(defs_stash.get(gc, idx_nat));
+            defs_stash.save(domain::arrow_val(gc, &defs_stash))
         };
-        constants.insert(sym_s, idx_arrow_nat_nat);
+        defs.insert(
+            sym_s,
+            Def::Constant {
+                ty: idx_arrow_nat_nat,
+            },
+        );
 
         Self {
             intern_pool,
-            constants,
-            constants_stash,
+            defs,
+            defs_stash,
         }
     }
 
@@ -63,9 +78,16 @@ impl Interpreter {
     }
 
     /// Get the type of a constant by the given symbol name.
-    pub fn constant<'gc>(&self, gc: &'gc Gc, name: Symbol) -> Option<Hndl<'gc>> {
-        let idx = *self.constants.get(&name)?;
-        Some(self.constants_stash.get(gc, idx))
+    pub fn definition<'gc>(&self, gc: &'gc Gc, name: Symbol) -> Option<Definition<'gc>> {
+        match *self.defs.get(&name)? {
+            Def::Constant { ty } => Some(Definition::Constant {
+                ty: self.defs_stash.get(gc, ty),
+            }),
+            Def::Expression { tm, ty } => Some(Definition::Expression {
+                tm: self.defs_stash.get(gc, tm),
+                ty: self.defs_stash.get(gc, ty),
+            }),
+        }
     }
 
     /// Normalize a term with no free variables.
@@ -102,41 +124,56 @@ impl Interpreter {
         stash: &gc::RootSet,
     ) -> elab::Result<()> {
         let ref mut cx = elab::Context::new(self, gc);
+        let mut param_vars = Vec::with_capacity(def.sig.params.len());
 
         // introduce parameters into scope
         for param in def.sig.params {
             elab::elab_type(gc, cx, param.ty)?;
             cx.stash().duplicate();
             cx.bind(Some(param.name));
+            param_vars.push(Some(param.name.intern(&self.intern_pool)));
         }
 
         // typecheck the body
         elab::elab_type(gc, cx, def.sig.ret_ty)?;
         cx.stash().duplicate();
         elab::elab_term_chk(gc, cx, def.body)?;
-        cx.stash().transfer(stash);
-        // :: param_tys ... ret_ty_tm
+        // :: param_tys ... ret_ty body_tm
+
+        // turn definition into expression by wrapping in lambdas
+        // def f (x : t) ... : u = e  -->  fn x => ... => e
+        for &var in param_vars.iter().rev() {
+            cx.stash().save(domain::fn_term(gc, var, cx.stash()));
+        }
+        let def_tm_idx = cx.stash().transfer(&self.defs_stash);
 
         // reconstruct full function type from each parameter
         // def f (x : t) ... : u  -->   (x : t) ... -> u
-        cx.reify(gc);
-        cx.stash().transfer(stash);
-        for param in def.sig.params.iter().rev() {
-            let var = Some(param.name.intern(&self.intern_pool));
-            cx.unbind();
+        for &var in param_vars.iter().rev() {
+            // :: param_tys ... param_ty ret_ty
             cx.reify(gc);
-            cx.stash().transfer(stash);
-            stash.swap();
-            stash.save(domain::pi_term(gc, var, stash));
+            cx.unbind();
+            cx.env(gc);
+            cx.stash().save(domain::pi_val(gc, var, cx.stash()));
+            // :: param_tys ... pi_ty
         }
+        // :: pi_ty
+        cx.stash().duplicate();
+        let def_ty_idx = cx.stash().transfer(&self.defs_stash);
 
-        // add as a constant
+        // reify type before returning
+        nbe::reify(gc, 0, cx.stash());
+        cx.stash().transfer(stash);
+
+        // add as a definition
         let def_sym = def.sig.name.intern(&self.intern_pool);
-        stash.duplicate();
-        let idx = stash.transfer(&self.constants_stash);
-        self.constants_stash.save(domain::empty_env());
-        nbe::eval(gc, &self.constants_stash);
-        self.constants.insert(def_sym, idx);
+        self.defs.insert(
+            def_sym,
+            Def::Expression {
+                tm: def_tm_idx,
+                ty: def_ty_idx,
+            },
+        );
 
         Ok(())
     }
