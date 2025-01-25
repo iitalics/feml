@@ -1,0 +1,6 @@
+def id (A : type) (x : A) : A = x;
+assert id : (A : type) -> A -> A;
+assert id nat : nat -> nat;
+assert id nat Z : nat;
+def twice (A : type) (f : A -> A) (z : A) : A = f (f z);
+assert twice nat (fn n => S (S (S n))) Z : nat;

@@ -18,17 +18,19 @@ def id (A : type) (x : A) : A = x;
 assert id : (A : type) -> A -> A;
 assert id nat : nat -> nat;
 assert id nat Z : nat;
-assert S (S Z) : nat;
+def twice (A : type) (f : A -> A) (z : A) : A = f (f z);
+assert twice nat (fn n => S (S (S n))) Z : nat;
 
-$ cargo run --release -- example.feml 
-   Compiling femlc v0.1.0 (/home/iitalics/code/feml/src/femlc)
-    Finished `release` profile [optimized] target(s) in 0.19s
+
+$ cargo run --release -- example.feml
+    Finished `release` profile [optimized] target(s) in 0.00s
      Running `target/release/femlc example.feml`
 def id : (A : type) -> (x : A) -> A
 assert fn A => fn x => x : (A : type) -> A -> A = fn A => fn x => x
 assert (fn A => fn x => x) nat : nat -> nat = fn x => x
 assert (fn A => fn x => x) nat Z : nat = Z
-assert S (S Z) : nat = S (S Z)
+def twice : (A : type) -> (f : A -> A) -> (z : A) -> A
+assert (fn A => fn f => fn z => f (f z)) nat (fn n => S (S (S n))) Z : nat = S (S (S (S (S (S Z)))))
 ```
 
 ## Language syntax
@@ -39,7 +41,7 @@ The following EBNF is roughly parsed.
 <file> ::=
   (<decl>)*
 
-<decl> ::= 
+<decl> ::=
   <def> | <assert>
 
 <def> ::=
